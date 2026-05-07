@@ -1,0 +1,22 @@
+# Perfil Chrome do WhatsApp (contém sessão autenticada — NUNCA subir)
+.whatsapp_profile/
+
+# Logs gerados pelo script
+*.log
+
+# Cache do Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Arquivos do sistema Windows
+Thumbs.db
+desktop.ini
+
+# pytest
+.pytest_cache/
