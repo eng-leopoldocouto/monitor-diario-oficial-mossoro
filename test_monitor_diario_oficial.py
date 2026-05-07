@@ -75,16 +75,22 @@ HTML_PUBLICACAO = """
 Você está vendo
 Data:
 06/05/2026
+<div class="ato_separator"></div>
 PORTARIA Nº 072/2026 - GP/CMM
 Dispõe sobre prorrogação da cessão funcional.
 O PRESIDENTE DA CÂMARA MUNICIPAL, no uso de suas atribuições,
+
 RESOLVE:
+
 Art. 1º Autorizar a cessão da servidora EDNA GOMES DE SOUZA SALES.
+
 Art. 2º Esta Portaria entra em vigor na data de sua publicação.
+<div class="ato_separator"></div>
 PORTARIA Nº 073/2026 - GP/CMM
 Dispõe sobre anulação de portaria anterior.
 Art. 1º TORNAR SEM EFEITO a Portaria nº 052/2026.
 Art. 2º Esta Portaria entra em vigor na data de sua publicação.
+<div class="ato_separator"></div>
 EXTRATO DE CONTRATO
 Contrato Nº 01/2026. Objeto: aquisição de cadeiras. Valor: R$ 57.256,00.
 </div>
@@ -102,6 +108,7 @@ HTML_SEM_MAIN_CONTENT = """
 HTML_PUBLICACAO_COM_NBSP = """
 <html><body>
 <div id="main-content">
+<div class="ato_separator"></div>
 PORTARIA Nº 052/2026
 Dispõe sobre designação de agente de contratação.
 Art. 1\xba REVOGAR a portaria que designou\xa0GEORGIANY\xa0PAULA\xa0BESSA\xa0CAMPELO.
@@ -573,27 +580,34 @@ class TestFormatarMensagem:
         msg = monitor.formatar_mensagem([oc], "06/05/2026")
         assert "PORTARIA Nº 999/2026" in msg
 
-    def test_ementa_aparece_quando_preenchida(self):
-        oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "Dispõe sobre nomeação.", "X")
+    def test_corpo_do_ato_aparece_na_mensagem(self):
+        """Linhas após o título devem aparecer no corpo da mensagem."""
+        conteudo = "PORTARIA Nº 001\nDispõe sobre nomeação.\nArt. 1º Resolve-se."
+        oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "Dispõe sobre nomeação.", conteudo)
         msg = monitor.formatar_mensagem([oc], "06/05/2026")
         assert "Dispõe sobre nomeação." in msg
+        assert "Art. 1º Resolve-se." in msg
 
-    def test_linha_ementa_ausente_quando_vazia(self):
-        """Quando ementa é vazia, a linha 'Ementa:' não deve aparecer."""
-        oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "", "Conteúdo aqui.")
+    def test_label_ementa_nunca_aparece(self):
+        """O campo 'Ementa:' foi removido da mensagem — conteúdo é exibido em bloco."""
+        oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "Qualquer ementa.", "Conteúdo.")
         msg = monitor.formatar_mensagem([oc], "06/05/2026")
         assert "Ementa:" not in msg
 
-    def test_conteudo_truncado_quando_maior_que_500_chars(self):
-        conteudo_longo = "A" * 600
-        oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "Ementa.", conteudo_longo)
+    def test_conteudo_completo_sem_truncacao(self):
+        """Conteúdos longos devem aparecer integralmente, sem '...' de truncação."""
+        corpo_longo = "X " * 300  # 600 chars
+        conteudo = "PORTARIA Nº 001\n" + corpo_longo
+        oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "", conteudo)
         msg = monitor.formatar_mensagem([oc], "06/05/2026")
-        assert "..." in msg
+        assert corpo_longo.strip() in msg
+        assert "..." not in msg
 
-    def test_conteudo_curto_nao_truncado(self):
-        conteudo_curto = "Texto breve."
-        oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "Ementa.", conteudo_curto)
+    def test_conteudo_curto_aparece_completo(self):
+        conteudo = "PORTARIA Nº 001\nTexto breve."
+        oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "", conteudo)
         msg = monitor.formatar_mensagem([oc], "06/05/2026")
+        assert "Texto breve." in msg
         assert "..." not in msg
 
     def test_multiplas_ocorrencias_numeradas_sequencialmente(self):

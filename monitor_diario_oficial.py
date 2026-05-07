@@ -16,12 +16,14 @@
 #   e não precisará ser repetida nas próximas execuções.
 # ============================================================
 
+import io
 import os
 import re
 import time
 import ctypes
 import logging
 import logging.handlers
+import unicodedata
 from datetime import datetime, timedelta
 
 import requests
@@ -47,6 +49,7 @@ NOMES_MONITORADOS = [
     "DEIVISON TAEMY DIAS DA SILVA",
     "ALAERDSON NASCIMENTO DE LIMA",
     "GEORGIANY PAULA BESSA CAMPELO", #APAGAR DEPOIS
+    "LARYSSA RAYANE DE OLIVEIRA SILVA"
 ]
 
 # TODO: coloque o nome exato do grupo do WhatsApp onde a mensagem será enviada
@@ -284,8 +287,6 @@ def extrair_portarias(url_html: str) -> list[dict]:
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # O site exibe o conteúdo do diário em blocos de texto sequenciais
-    # Identifica seções pelo cabeçalho de cada órgão/seção
     portarias = []
     conteudo_principal = soup.select_one("#main-content") or soup.body
 
@@ -293,39 +294,62 @@ def extrair_portarias(url_html: str) -> list[dict]:
         log.warning("Não foi possível identificar o conteúdo principal da página.")
         return []
 
-    texto_completo = conteudo_principal.get_text("\n", strip=True)
+    # Substitui cada <div class="ato_separator"> por um marcador de texto único
+    # antes de extrair o texto plano — isso delimita exatamente cada ato.
+    MARCADOR = "\x00ATO_SEP\x00"
+    conteudo_copia = BeautifulSoup(str(conteudo_principal), "html.parser")
+    for sep in conteudo_copia.find_all("div", class_="ato_separator"):
+        sep.replace_with(MARCADOR)
 
-    # Divide o texto em blocos de portaria usando "PORTARIA" como separador
-    # Também captura outros atos: DECRETO, LEI, RESOLUÇÃO, ATO, TERMO
+    texto_completo = conteudo_copia.get_text("\n", strip=False)
+    blocos = [b.strip() for b in texto_completo.split(MARCADOR) if b.strip()]
+
+    log.info(f"Blocos de ato encontrados (separados por ato_separator): {len(blocos)}")
+
+    # Padrões de início de ato para identificar o título dentro de cada bloco
     padroes_ato = re.compile(
-        r"((?:PORTARIA|DECRETO|LEI|RESOLUÇÃO|RESOLUCAO|ATO|TERMO|EXTRATO|AVISO|EDITAL)"
-        r"[^\n]{0,200})",
+        r"(?:PORTARIA|DECRETO|LEI|RESOLUÇÃO|RESOLUCAO|ATO|TERMO|EXTRATO|AVISO|EDITAL)"
+        r"[^\n]{0,200}",
         re.IGNORECASE,
     )
 
-    linhas = texto_completo.split("\n")
-    portaria_atual = None
+    for bloco in blocos:
+        linhas = bloco.split("\n")
+        titulo = None
+        ementa = ""
+        conteudo_linhas = []
+        ultima_vazia = False
 
-    for linha in linhas:
-        linha = linha.strip()
-        if not linha:
-            continue
+        for linha in linhas:
+            stripped = linha.strip()
 
-        if padroes_ato.match(linha):
-            if portaria_atual:
-                portarias.append(portaria_atual)
-            portaria_atual = {
-                "titulo": linha,
-                "ementa": "",
-                "conteudo": linha,
-            }
-        elif portaria_atual:
-            if not portaria_atual["ementa"]:
-                portaria_atual["ementa"] = linha
-            portaria_atual["conteudo"] += "\n" + linha
+            if not stripped:
+                # Linha em branco — preserva parágrafo dentro do ato (sem duplicar)
+                if titulo is not None and not ultima_vazia:
+                    conteudo_linhas.append("")
+                ultima_vazia = True
+                continue
 
-    if portaria_atual:
-        portarias.append(portaria_atual)
+            ultima_vazia = False
+
+            if titulo is None and padroes_ato.match(stripped):
+                titulo = stripped
+
+            if titulo is not None:
+                if not ementa and stripped != titulo:
+                    ementa = stripped
+                conteudo_linhas.append(stripped)
+
+        if titulo:
+            # Remove linhas em branco no final do conteúdo
+            while conteudo_linhas and not conteudo_linhas[-1]:
+                conteudo_linhas.pop()
+            portarias.append({
+                "titulo": titulo,
+                "ementa": ementa,
+                "conteudo": "\n".join(conteudo_linhas),
+            })
+
     log.info(f"Total de atos extraídos: {len(portarias)}")
     return portarias
 
@@ -367,26 +391,198 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str) -> str:
         nome = ocorrencia["nome"]
         portaria = ocorrencia["portaria"]
         titulo = portaria["titulo"]
-        ementa = portaria["ementa"]
 
-        # Limita o conteúdo para não tornar a mensagem muito longa
-        conteudo_resumido = portaria["conteudo"][:500].strip()
-        if len(portaria["conteudo"]) > 500:
-            conteudo_resumido += "..."
+        # Corpo = conteúdo completo sem a primeira linha (título já exibido em *Ato:*)
+        linhas_conteudo = portaria["conteudo"].split("\n")
+        corpo = "\n".join(linhas_conteudo[1:]).strip()
 
         linhas += [
             f"━━━━━━━━━━━━━━━━━━",
             f"*{i}. Nome:* {nome}",
             f"*Ato:* {titulo}",
-            f"*Ementa:* {ementa}" if ementa else None,
-            f"\n{conteudo_resumido}",
+            f"\n{corpo}",
             "",
         ]
 
     return "\n".join(l for l in linhas if l is not None)
 
 
-def enviar_whatsapp(mensagem: str, grupo: str) -> bool:
+def buscar_url_pdf(url_publicacao: str) -> str | None:
+    """
+    Acessa a página HTML da publicação e extrai o link direto para o PDF oficial.
+    O link segue o padrão /pmm/uploads/publicacao/pdf/{id}/{nome}.pdf
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; DOM-Monitor/1.0)"}
+    try:
+        resp = requests.get(url_publicacao, headers=headers, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        log.error(f"Erro ao buscar página para localizar PDF: {e}")
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    link = soup.find("a", href=re.compile(r"/pmm/uploads/publicacao/pdf/"))
+    if not link:
+        log.warning("Link do PDF não encontrado na página da publicação.")
+        return None
+
+    href = link.get("href", "")
+    url_pdf = (BASE_URL + href) if href.startswith("/") else href
+    log.info(f"URL do PDF encontrada: {url_pdf}")
+    return url_pdf
+
+
+def extrair_paginas_pdf(url_pdf: str, titulos: list[str]) -> str | None:
+    """
+    Baixa o PDF da publicação, localiza as páginas que contêm os títulos
+    das portarias encontradas e gera um novo PDF com apenas essas páginas.
+
+    Retorna o caminho do PDF gerado, ou None se falhar ou não encontrar páginas.
+
+    Requer: pip install pypdf
+    """
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError:
+        log.error("Biblioteca 'pypdf' não instalada. Execute: pip install pypdf")
+        return None
+
+    def _normalizar(texto: str) -> str:
+        """Remove acentos e converte para maiúsculas para comparação robusta."""
+        sem_acento = unicodedata.normalize("NFKD", texto)
+        sem_acento = "".join(c for c in sem_acento if not unicodedata.combining(c))
+        return sem_acento.upper()
+
+    titulos_norm = [_normalizar(t) for t in titulos]
+
+    log.info(f"Baixando PDF: {url_pdf}")
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; DOM-Monitor/1.0)"}
+    try:
+        resp = requests.get(url_pdf, headers=headers, timeout=120)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        log.error(f"Erro ao baixar PDF: {e}")
+        return None
+
+    reader = PdfReader(io.BytesIO(resp.content))
+    writer = PdfWriter()
+    paginas_incluidas = []
+
+    for num, page in enumerate(reader.pages):
+        texto_pag = _normalizar(page.extract_text() or "")
+        if any(titulo in texto_pag for titulo in titulos_norm):
+            writer.add_page(page)
+            paginas_incluidas.append(num + 1)
+            # Inclui a página seguinte caso a portaria se estenda nela
+            if num + 1 < len(reader.pages):
+                prox = reader.pages[num + 1]
+                texto_prox = _normalizar(prox.extract_text() or "")
+                # Só adiciona a próxima se ela não começa um novo ato
+                if not any(titulo in texto_prox for titulo in titulos_norm):
+                    writer.add_page(prox)
+                    paginas_incluidas.append(num + 2)
+
+    if not paginas_incluidas:
+        log.warning("Nenhuma página do PDF contém os títulos das portarias encontradas.")
+        return None
+
+    # Remove duplicatas de página mantendo a ordem
+    paginas_incluidas = sorted(set(paginas_incluidas))
+    log.info(f"Páginas extraídas do PDF: {paginas_incluidas}")
+
+    caminho_saida = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "_portarias_encontradas.pdf",
+    )
+    with open(caminho_saida, "wb") as f:
+        writer.write(f)
+
+    log.info(f"PDF com portarias salvo em: {caminho_saida}")
+    return caminho_saida
+
+
+def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
+    """
+    Envia um arquivo PDF para o grupo já aberto no WhatsApp Web.
+    Deve ser chamado após o grupo estar visível na janela do driver.
+    """
+    caminho_abs = os.path.abspath(caminho_pdf)
+    log.info(f"Enviando arquivo: {caminho_abs}")
+
+    # Localiza o botão de anexar (ícone de clipe)
+    xpaths_clipe = [
+        '//span[@data-testid="clip"]',
+        '//div[@title="Attach"]',
+        '//div[@title="Anexar"]',
+        '//button[contains(@aria-label,"Attach")]',
+        '//button[contains(@aria-label,"nexar")]',
+        '//div[contains(@aria-label,"nexar")]',
+    ]
+    btn_clipe = None
+    for xpath in xpaths_clipe:
+        try:
+            btn_clipe = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, xpath))
+            )
+            log.info(f"Botão de anexar encontrado: {xpath}")
+            break
+        except Exception:
+            pass
+
+    if btn_clipe is None:
+        raise Exception("Botão de anexar (clipe) não encontrado.")
+
+    btn_clipe.click()
+    time.sleep(1)
+
+    # Localiza o input[type="file"] exposto após abrir o menu de anexos
+    # Em vez de clicar em "Documento" (que abre diálogo do OS, inacessível ao Selenium),
+    # enviamos o caminho diretamente ao input de arquivo via send_keys.
+    input_arquivo = None
+    try:
+        inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+        if inputs:
+            input_arquivo = inputs[0]
+            log.info(f"Input de arquivo encontrado ({len(inputs)} disponível/eis).")
+    except Exception:
+        pass
+
+    if input_arquivo is None:
+        raise Exception("Input de arquivo não encontrado após abrir menu de anexos.")
+
+    # Garante que o input esteja interagível e envia o caminho do arquivo
+    driver.execute_script("arguments[0].style.display = 'block';", input_arquivo)
+    input_arquivo.send_keys(caminho_abs)
+    log.info("Caminho do arquivo enviado ao input.")
+    time.sleep(3)  # Aguarda pré-visualização do arquivo carregar
+
+    # Clica no botão de enviar
+    xpaths_enviar = [
+        '//span[@data-testid="send"]',
+        '//div[@aria-label="Enviar"]',
+        '//div[@aria-label="Send"]',
+        '//button[@aria-label="Enviar"]',
+        '//button[@aria-label="Send"]',
+    ]
+    for xpath in xpaths_enviar:
+        try:
+            btn_enviar = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, xpath))
+            )
+            btn_enviar.click()
+            log.info("PDF enviado com sucesso!")
+            time.sleep(3)
+            return
+        except Exception:
+            pass
+
+    # Fallback: Enter dispara o envio do arquivo pré-visualizado
+    input_arquivo.send_keys(Keys.ENTER)
+    log.info("PDF enviado via Enter (fallback).")
+    time.sleep(3)
+
+
+def enviar_whatsapp(mensagem: str, grupo: str, caminho_pdf: str = None) -> bool:
     """
     Envia a mensagem para o grupo do WhatsApp via Selenium + WhatsApp Web.
 
@@ -541,8 +737,16 @@ def enviar_whatsapp(mensagem: str, grupo: str) -> bool:
         _colar_no_elemento(driver, caixa_msg, mensagem)
         time.sleep(0.5)
         caixa_msg.send_keys(Keys.ENTER)
-        log.info("Mensagem enviada com sucesso!")
+        log.info("Mensagem de texto enviada com sucesso!")
         time.sleep(2)
+
+        # Envia o PDF recortado (se disponível)
+        if caminho_pdf and os.path.isfile(caminho_pdf):
+            log.info("Iniciando envio do PDF com as portarias...")
+            _enviar_arquivo_no_grupo(driver, caminho_pdf)
+        elif caminho_pdf:
+            log.warning(f"Arquivo PDF não encontrado: {caminho_pdf}")
+
         return True
 
     except Exception as e:
@@ -590,11 +794,26 @@ def main():
 
     log.info(f"{len(ocorrencias)} ocorrência(s) encontrada(s). Preparando envio...")
 
-    # 5. Formata e envia a mensagem no WhatsApp
+    # 5. Formata a mensagem de texto
     mensagem = formatar_mensagem(ocorrencias, data_anterior)
     log.info(f"Mensagem formatada:\n{mensagem}")
 
-    sucesso = enviar_whatsapp(mensagem, WHATSAPP_GRUPO)
+    # 6. Busca o PDF da publicação e extrai as páginas das portarias encontradas
+    titulos_encontrados = [oc["portaria"]["titulo"] for oc in ocorrencias]
+    url_pdf = buscar_url_pdf(publicacao["url_html"])
+    caminho_pdf = None
+    if url_pdf:
+        caminho_pdf = extrair_paginas_pdf(url_pdf, titulos_encontrados)
+    else:
+        log.warning("PDF não encontrado — apenas a mensagem de texto será enviada.")
+
+    # 7. Envia mensagem de texto e PDF (se disponível) no WhatsApp
+    sucesso = enviar_whatsapp(mensagem, WHATSAPP_GRUPO, caminho_pdf)
+
+    # 8. Remove o PDF temporário após envio
+    if caminho_pdf and os.path.isfile(caminho_pdf):
+        os.remove(caminho_pdf)
+        log.info("Arquivo PDF temporário removido.")
 
     if sucesso:
         log.info("Processo concluído com sucesso!")
