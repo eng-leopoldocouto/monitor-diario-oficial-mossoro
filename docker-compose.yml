@@ -1,0 +1,91 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Monitor do Diário Oficial de Mossoró — Docker Compose
+#
+# INÍCIO RÁPIDO:
+#   1. cp .env.example .env          # cria seu arquivo de configuração
+#   2. nano .env                      # preencha nomes e grupo WhatsApp
+#   3. docker compose up -d           # sobe os containers em background
+#   4. Acesse http://localhost:7900   # veja o Chrome — escaneie o QR code
+#   5. docker compose logs -f monitor # acompanhe os logs do monitor
+#
+# ARQUITETURA:
+#   ┌─────────────────┐      WebDriver      ┌──────────────────────────┐
+#   │    monitor      │ ──────────────────► │        selenium          │
+#   │  (Python app)   │                     │  Chrome + VNC + noVNC    │
+#   └─────────────────┘                     └──────────────────────────┘
+#          │                                          │
+#          ▼                                          ▼
+#      ./logs/                               whatsapp_session (volume)
+#   (logs do monitor)                      (sessão WhatsApp persistente)
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── Chrome com VNC — onde o WhatsApp Web roda ─────────────────────────────
+  selenium:
+    image: selenium/standalone-chrome:latest
+    container_name: dom_selenium
+    restart: unless-stopped
+    ports:
+      - "4444:4444"   # Selenium WebDriver API (usado internamente pelo monitor)
+      - "7900:7900"   # noVNC — abra http://localhost:7900 para ver o Chrome
+                      # Necessário para escanear o QR code do WhatsApp na 1ª execução
+    environment:
+      SE_VNC_PASSWORD: "${VNC_PASSWORD:-mossoro123}"
+      SE_NODE_MAX_SESSIONS: "1"
+      SE_SCREEN_WIDTH: "1280"
+      SE_SCREEN_HEIGHT: "800"
+      SE_START_XVFB: "true"
+    volumes:
+      # Sessão do WhatsApp: persiste entre reinicializações do container
+      # Apague este volume apenas se quiser rautenticar (novo QR code)
+      - whatsapp_session:/home/seluser/.whatsapp_profile
+    shm_size: "2gb"   # Evita crashes do Chrome por falta de memória compartilhada
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4444/wd/hub/status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── Script Python — monitora o DOM e envia WhatsApp ───────────────────────
+  monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dom_monitor
+    restart: unless-stopped
+    depends_on:
+      selenium:
+        condition: service_healthy   # só inicia após o Chrome estar pronto
+    environment:
+      # ── Selenium (obrigatório em modo Docker) ─────────────────────────────
+      SELENIUM_URL: "http://selenium:4444/wd/hub"
+
+      # ── Caminho do perfil Chrome DENTRO do container selenium ─────────────
+      # Este é o caminho que o Chrome usa — não altere sem mudar o volume acima
+      WHATSAPP_PROFILE_DIR: "/home/seluser/.whatsapp_profile"
+
+      # ── Configurações do monitor (sobrescreve os defaults do código) ───────
+      NOMES_MONITORADOS: "${NOMES_MONITORADOS}"
+      WHATSAPP_GRUPO: "${WHATSAPP_GRUPO}"
+      TIMEOUT_QR_CODE: "${TIMEOUT_QR_CODE:-120}"
+      HORARIO_EXECUCAO: "${HORARIO_EXECUCAO:-07:30}"
+
+      # ── Logs salvos na pasta montada abaixo ───────────────────────────────
+      LOG_DIR: "/app/logs"
+
+      # ── Fuso horário ──────────────────────────────────────────────────────
+      TZ: "America/Fortaleza"
+
+    volumes:
+      # Logs acessíveis na pasta ./logs do host
+      - ./logs:/app/logs
+
+# ── Volumes nomeados ──────────────────────────────────────────────────────────
+volumes:
+  whatsapp_session:
+    name: dom_whatsapp_session
+    # Para rautenticar o WhatsApp (apagar sessão), execute:
+    #   docker compose down -v
+    # Isso remove o volume e o próximo `docker compose up` pedirá novo QR code.
