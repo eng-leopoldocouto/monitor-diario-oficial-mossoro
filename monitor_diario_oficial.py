@@ -19,10 +19,12 @@
 import io
 import os
 import re
+import sys
 import time
 import ctypes
 import logging
 import logging.handlers
+import platform
 import unicodedata
 from datetime import datetime, timedelta
 
@@ -34,38 +36,76 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+
+# webdriver_manager só é necessário no modo local (não-Docker).
+# A importação é opcional para não exigir a dependência dentro do container.
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+except ImportError:
+    ChromeDriverManager = None  # type: ignore
 
 # ─────────────────────────────────────────────
-# CONFIGURAÇÕES DO USUÁRIO — edite aqui
+# CONFIGURAÇÕES DO USUÁRIO
+# ─────────────────────────────────────────────
+# Cada valor pode ser sobrescrito por variável de ambiente, permitindo uso
+# sem editar código — ideal para Docker / Docker Compose (.env file).
+#
+# Variáveis de ambiente reconhecidas:
+#   NOMES_MONITORADOS   — nomes separados por vírgula (MAIÚSCULAS)
+#   WHATSAPP_GRUPO      — nome exato do grupo no WhatsApp
+#   TIMEOUT_QR_CODE     — segundos para escanear o QR code (padrão: 120)
+#   SELENIUM_URL        — URL do WebDriver remoto (ex.: http://selenium:4444/wd/hub)
+#                         Se vazio, usa ChromeDriver local (modo Windows/instalação direta)
+#   WHATSAPP_PROFILE_DIR— caminho do perfil Chrome para sessão WhatsApp
+#   LOG_DIR             — pasta de logs (padrão: mesma pasta do script)
+#   HORARIO_EXECUCAO    — horário de execução diária HH:MM (ex.: 07:30)
+#                         Necessário apenas quando iniciado com --agendar
 # ─────────────────────────────────────────────
 
-# TODO: adicione os nomes que deseja monitorar (em MAIÚSCULAS para facilitar a busca)
-NOMES_MONITORADOS = [
+def _ler_lista_env(chave: str, padrao: list[str]) -> list[str]:
+    """Lê lista separada por vírgula de variável de ambiente; usa padrão se vazia."""
+    valor = os.environ.get(chave, "").strip()
+    if valor:
+        return [item.strip().upper() for item in valor.split(",") if item.strip()]
+    return padrao
+
+
+# Nomes a monitorar (TODO: edite a lista padrão abaixo ou defina NOMES_MONITORADOS no .env)
+_NOMES_PADRAO = [
     "JOSÉ LEOPOLDO DANTAS COUTO",
     "JOSE LEOPOLDO DANTAS COUTO",
     "CARLA VANNESSA DA ROCHA",
     "MARIA LUCINEIDE VIDAL RODRIGUES",
     "DEIVISON TAEMY DIAS DA SILVA",
     "ALAERDSON NASCIMENTO DE LIMA",
-    "EDNARDO PEREIRA DE PAIVA", #APAGAR DEPOIS
+    "EDNARDO PEREIRA DE PAIVA",  # TODO: remover após validação
 ]
+NOMES_MONITORADOS: list[str] = _ler_lista_env("NOMES_MONITORADOS", _NOMES_PADRAO)
 
-# TODO: coloque o nome exato do grupo do WhatsApp onde a mensagem será enviada
-WHATSAPP_GRUPO = "Saúde | Educação PMM 💉🎓 - TESTES"
+# Nome exato do grupo do WhatsApp (TODO: edite aqui ou defina WHATSAPP_GRUPO no .env)
+WHATSAPP_GRUPO: str = os.environ.get(
+    "WHATSAPP_GRUPO", "Saúde | Educação PMM 💉🎓 - TESTES"
+)
 
-# Tempo máximo (em segundos) para escanear o QR code na primeira execução.
-# Aumente este valor se precisar de mais tempo para abrir o celular e escanear.
-TIMEOUT_QR_CODE = 120  # 5 minutos
+# Tempo máximo (segundos) para escanear o QR code na primeira execução
+TIMEOUT_QR_CODE: int = int(os.environ.get("TIMEOUT_QR_CODE", "120"))
 
 # URL base do Diário Oficial de Mossoró
 BASE_URL = "https://dom.mossoro.rn.gov.br"
 
-# Perfil Chrome dedicado exclusivamente ao WhatsApp Web (separado do Chrome pessoal).
-# Criado automaticamente na primeira execução. Não apague esta pasta após autenticar.
-WHATSAPP_PROFILE_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), ".whatsapp_profile"
-)
+# ── Modo de operação ────────────────────────────────────────────────────────
+# SELENIUM_URL vazio  → ChromeDriver local (Windows/Linux com Chrome instalado)
+# SELENIUM_URL preench→ Selenium Grid remoto (Docker)
+SELENIUM_URL: str = os.environ.get("SELENIUM_URL", "").strip()
+
+# Perfil Chrome com sessão do WhatsApp.
+# Modo local : pasta ".whatsapp_profile" ao lado do script
+# Modo Docker: caminho dentro do container Selenium (configurável via env)
+_profile_padrao = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".whatsapp_profile")
+WHATSAPP_PROFILE_DIR: str = os.environ.get("WHATSAPP_PROFILE_DIR", _profile_padrao)
+
+# Pasta de logs (padrão: mesma pasta do script; em Docker use /app/logs montado)
+LOG_DIR: str = os.environ.get("LOG_DIR", os.path.dirname(os.path.abspath(__file__)))
 
 
 # ─────────────────────────────────────────────
@@ -103,7 +143,8 @@ def configurar_logging() -> logging.Logger:
         "%(asctime)s [%(levelname)-8s] %(funcName)s:%(lineno)d — %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitor_dom.log")
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log_path = os.path.join(LOG_DIR, "monitor_dom.log")
     arquivo_handler = logging.handlers.RotatingFileHandler(
         log_path,
         maxBytes=5 * 1024 * 1024,  # 5 MB
@@ -130,23 +171,19 @@ log = configurar_logging()
 # UTILITÁRIOS INTERNOS
 # ─────────────────────────────────────────────
 
-def _colar_no_elemento(driver, elemento, texto: str) -> None:
+def _colar_windows(elemento, texto: str) -> None:
     """
-    Cola texto em um elemento do Selenium via clipboard do Windows.
+    Cola texto via clipboard do Windows (ctypes) — somente Windows 64-bit.
 
-    Evita o erro "ChromeDriver only supports characters in the BMP" que ocorre
-    ao usar send_keys com emojis (código Unicode > U+FFFF, como 📂 🔔 📅).
-    Funciona em qualquer elemento: <input>, <div contenteditable>, etc.
+    No Windows 64-bit é obrigatório declarar restype/argtypes para funções que
+    retornam ou recebem handles/ponteiros; sem isso ctypes usa c_int (32 bits)
+    e trunca endereços de 64 bits, causando access violation ou OverflowError.
     """
-    # Copia para o clipboard do Windows via ctypes (sem dependências externas).
-    # No Windows 64-bit é obrigatório declarar restype/argtypes para funções que
-    # retornam ou recebem handles/ponteiros — sem isso ctypes usa c_int (32 bits)
-    # e trunca endereços de 64 bits, causando access violation ou OverflowError.
     CF_UNICODETEXT = 13
     GMEM_MOVEABLE = 0x0002
     encoded = texto.encode("utf-16-le") + b"\x00\x00"
-    k32 = ctypes.windll.kernel32
-    u32 = ctypes.windll.user32
+    k32 = ctypes.windll.kernel32   # type: ignore[attr-defined]
+    u32 = ctypes.windll.user32     # type: ignore[attr-defined]
 
     k32.GlobalAlloc.restype = ctypes.c_void_p
     k32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
@@ -168,6 +205,86 @@ def _colar_no_elemento(driver, elemento, texto: str) -> None:
 
     elemento.click()
     elemento.send_keys(Keys.CONTROL, "v")
+
+
+def _colar_no_elemento(driver, elemento, texto: str) -> None:
+    """
+    Insere texto em um elemento do Selenium de forma cross-platform.
+
+    Suporta qualquer Unicode — incluindo emoji (📂 🔔 📅, código > U+FFFF) —
+    sem depender do clipboard do sistema operacional.
+    Funciona tanto com ChromeDriver local quanto com Selenium Grid remoto (Docker).
+
+    Estratégia em cascata:
+      1. CDP Input.insertText   — nativo do Chrome, sem clipboard, qualquer Unicode
+      2. JavaScript execCommand — fallback para contenteditable (ainda suportado)
+      3. Clipboard Windows      — fallback para Windows local (ctypes)
+      4. send_keys              — último recurso (não suporta emoji > U+FFFF)
+    """
+    elemento.click()
+    time.sleep(0.15)
+
+    # Seleciona todo conteúdo existente para que a inserção substitua o texto atual
+    elemento.send_keys(Keys.CONTROL, "a")
+    time.sleep(0.05)
+
+    # ── Estratégia 1: CDP Input.insertText ──────────────────────────────────
+    # Funciona em Chrome local E em Selenium 4 Grid remoto (Docker).
+    # Insere texto no ponto de foco atual (substitui seleção), sem restrição BMP.
+    try:
+        driver.execute_cdp_cmd("Input.insertText", {"text": texto})
+        log.debug("_colar_no_elemento: texto inserido via CDP Input.insertText")
+        return
+    except Exception as e:
+        log.debug(f"CDP Input.insertText indisponível: {e}")
+
+    # ── Estratégia 2: JavaScript execCommand + native value setter ───────────
+    # execCommand('insertText') funciona em contenteditable.
+    # Para <input>/<textarea>, usa o native setter do React/Vue para disparar
+    # os eventos de mudança corretamente.
+    try:
+        inserido = driver.execute_script(
+            """
+            var el = arguments[0], txt = arguments[1];
+            el.focus();
+            if (el.isContentEditable) {
+                document.execCommand('selectAll', false, null);
+                return document.execCommand('insertText', false, txt);
+            }
+            var proto = el.tagName === 'TEXTAREA'
+                ? window.HTMLTextAreaElement.prototype
+                : window.HTMLInputElement.prototype;
+            var setter = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (setter && setter.set) {
+                setter.set.call(el, txt);
+                el.dispatchEvent(new Event('input',  { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+            }
+            return false;
+            """,
+            elemento,
+            texto,
+        )
+        if inserido:
+            log.debug("_colar_no_elemento: texto inserido via JavaScript execCommand")
+            return
+    except Exception as e:
+        log.debug(f"JavaScript execCommand falhou: {e}")
+
+    # ── Estratégia 3: clipboard do Windows (somente Windows local) ───────────
+    if platform.system() == "Windows" and not SELENIUM_URL:
+        try:
+            _colar_windows(elemento, texto)
+            log.debug("_colar_no_elemento: texto inserido via clipboard Windows")
+            return
+        except Exception as e:
+            log.debug(f"Clipboard Windows falhou: {e}")
+
+    # ── Estratégia 4: send_keys (último recurso) ─────────────────────────────
+    # Não suporta emoji > U+FFFF — pode lançar erro do ChromeDriver.
+    log.warning("_colar_no_elemento: usando send_keys (não suporta emoji > U+FFFF)")
+    elemento.send_keys(texto)
 
 
 # ─────────────────────────────────────────────
@@ -624,42 +741,82 @@ def enviar_whatsapp(mensagem: str, grupo: str, caminho_pdf: str = None) -> bool:
     """
     Envia a mensagem para o grupo do WhatsApp via Selenium + WhatsApp Web.
 
-    Usa um perfil Chrome dedicado (WHATSAPP_PROFILE_DIR), separado do Chrome
-    pessoal do usuário, evitando conflitos de perfil bloqueado.
+    Suporta dois modos de operação:
 
-    Na primeira execução o Chrome abre visivelmente para o usuário escanear o
-    QR code. Após autenticar, a sessão fica salva no perfil dedicado e as
-    execuções seguintes carregam sem precisar escanear novamente.
+    Modo local (SELENIUM_URL vazio — padrão Windows/instalação direta):
+      • Inicia o Chrome localmente via ChromeDriver.
+      • Verifica no filesystem se há sessão WhatsApp salva.
+      • Perfil Chrome salvo em WHATSAPP_PROFILE_DIR (pasta local).
+
+    Modo Docker (SELENIUM_URL definido — ex.: http://selenium:4444/wd/hub):
+      • Conecta ao Selenium Grid remoto (container selenium/standalone-chrome).
+      • A sessão WhatsApp é persistida no volume Docker montado no container Selenium.
+      • O noVNC do container permite escanear o QR code via browser (porta 7900).
+      • LocalFileDetector transfere automaticamente arquivos PDF para o container remoto.
     """
     log.info(f"Enviando mensagem para o grupo WhatsApp: '{grupo}'")
+    modo_docker = bool(SELENIUM_URL)
 
-    # Sessão válida = IndexedDB do WhatsApp presente (criado só após autenticação real)
-    # Verificar apenas a pasta "Default" é insuficiente — Chrome a cria mesmo sem login
-    sessao_valida = os.path.isdir(
-        os.path.join(
-            WHATSAPP_PROFILE_DIR,
-            "Default", "IndexedDB",
-            "https_web.whatsapp.com_0.indexeddb.leveldb",
-        )
-    )
-    timeout_auth = 30 if sessao_valida else TIMEOUT_QR_CODE
-
-    if not sessao_valida:
+    # ── Detecção de sessão e timeout de autenticação ─────────────────────────
+    if modo_docker:
+        # Em modo Docker, o perfil fica no container Selenium — não é possível
+        # inspecionar o filesystem remotamente. Usa timeout completo e deixa
+        # o Chrome decidir: se a sessão existe no volume, carrega em < 10 s.
+        timeout_auth = TIMEOUT_QR_CODE
         log.info(
-            "Sessão do WhatsApp não encontrada — Chrome abrirá para autenticação. "
-            "Escaneie o QR code no WhatsApp do celular. "
-            f"Você tem {TIMEOUT_QR_CODE} segundos."
+            f"Modo Docker: conectando ao Selenium em {SELENIUM_URL}\n"
+            f"Para escanear o QR code (1ª execução), acesse: "
+            f"http://localhost:7900  (senha: veja VNC_PASSWORD no .env)"
         )
+    else:
+        # Modo local: verifica IndexedDB do WhatsApp no filesystem
+        sessao_valida = os.path.isdir(
+            os.path.join(
+                WHATSAPP_PROFILE_DIR,
+                "Default", "IndexedDB",
+                "https_web.whatsapp.com_0.indexeddb.leveldb",
+            )
+        )
+        timeout_auth = 30 if sessao_valida else TIMEOUT_QR_CODE
+        if not sessao_valida:
+            log.info(
+                "Sessão do WhatsApp não encontrada — Chrome abrirá para autenticação.\n"
+                f"Escaneie o QR code no WhatsApp do celular. "
+                f"Você tem {TIMEOUT_QR_CODE} segundos."
+            )
 
+    # ── Opções do Chrome ─────────────────────────────────────────────────────
     options = webdriver.ChromeOptions()
     options.add_argument(f"--user-data-dir={WHATSAPP_PROFILE_DIR}")
     options.add_argument("--profile-directory=Default")
     options.add_argument("--remote-allow-origins=*")
+    # Flags necessárias em ambientes sem GPU (Docker/CI)
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
 
     driver = None
     try:
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
+        if modo_docker:
+            # ── Modo Docker: RemoteWebDriver ─────────────────────────────────
+            driver = webdriver.Remote(
+                command_executor=SELENIUM_URL,
+                options=options,
+            )
+            # LocalFileDetector faz o Selenium transferir automaticamente
+            # arquivos locais (PDF) para o container remoto ao usar send_keys
+            # em <input type="file"> — sem ele o ChromeDriver não encontraria o arquivo.
+            from selenium.webdriver.remote.file_detector import LocalFileDetector
+            driver.file_detector = LocalFileDetector()
+        else:
+            # ── Modo local: ChromeDriver gerenciado automaticamente ───────────
+            if ChromeDriverManager is None:
+                raise ImportError(
+                    "webdriver-manager não instalado. "
+                    "Execute: pip install webdriver-manager"
+                )
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
 
         wait = WebDriverWait(driver, timeout_auth)
         wait_curto = WebDriverWait(driver, 30)
@@ -859,5 +1016,61 @@ def main():
         log.error("Falha no envio da mensagem. Verifique os logs.")
 
 
+def _agendar_execucao(horario: str) -> None:
+    """
+    Executa main() todos os dias no horário especificado (loop infinito).
+
+    Utilizado pelo container Docker para substituir o cron do SO.
+    O fuso horário respeitado é o da variável de ambiente TZ do container.
+
+    Args:
+        horario: Horário de execução no formato "HH:MM" (ex: "07:30").
+    """
+    try:
+        hora, minuto = map(int, horario.split(":"))
+    except ValueError:
+        log.error(f"Formato de horário inválido: '{horario}' — use HH:MM (ex: 07:30)")
+        sys.exit(1)
+
+    log.info(
+        f"Modo agendado ativo — execução diária às {horario} "
+        f"(TZ={os.environ.get('TZ', 'local do sistema')})"
+    )
+
+    # Executa imediatamente se o horário configurado já passou hoje,
+    # evitando esperar quase 24 h na primeira execução do dia.
+    agora = datetime.now()
+    horario_hoje = agora.replace(hour=hora, minute=minuto, second=0, microsecond=0)
+    if agora >= horario_hoje:
+        log.info("Horário de hoje já passou — executando imediatamente.")
+        main()
+
+    while True:
+        agora = datetime.now()
+        proximo = agora.replace(hour=hora, minute=minuto, second=0, microsecond=0)
+        if proximo <= agora:
+            proximo += timedelta(days=1)
+
+        delta_s = (proximo - agora).total_seconds()
+        horas   = int(delta_s // 3600)
+        minutos = int((delta_s % 3600) // 60)
+        log.info(
+            f"Próxima execução: {proximo.strftime('%d/%m/%Y %H:%M')} "
+            f"(em {horas}h {minutos}min)"
+        )
+        time.sleep(delta_s)
+        main()
+
+
 if __name__ == "__main__":
-    main()
+    # ── Modo agendado (Docker / execução contínua) ───────────────────────────
+    # Acionado por: python monitor_diario_oficial.py --agendar
+    # Ou automaticamente quando HORARIO_EXECUCAO estiver definido no ambiente.
+    horario_env = os.environ.get("HORARIO_EXECUCAO", "").strip()
+    if "--agendar" in sys.argv or horario_env:
+        horario = horario_env or "07:30"
+        _agendar_execucao(horario)
+    else:
+        # ── Execução pontual (padrão local) ─────────────────────────────────
+        # Roda uma única vez e encerra — útil para teste manual ou cron externo.
+        main()

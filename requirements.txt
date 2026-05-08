@@ -1,0 +1,21 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Dependências do Monitor do Diário Oficial de Mossoró
+#
+# Instalar:  pip install -r requirements.txt
+# Docker:    copiado automaticamente pelo Dockerfile
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Requisições HTTP
+requests>=2.31.0
+
+# Parser HTML
+beautifulsoup4>=4.12.0
+
+# Selenium (WebDriver — controla Chrome local ou remoto)
+selenium>=4.18.0
+
+# Gerenciador automático do ChromeDriver (somente modo local / não-Docker)
+webdriver-manager>=4.0.0
+
+# Manipulação e extração de texto de PDFs
+pypdf>=4.0.0

@@ -1,22 +1,17 @@
-# Perfil Chrome do WhatsApp (contém sessão autenticada — NUNCA subir)
+# Configuracao local (dados sensiveis)
+.env
+.env.local
+# Sessao WhatsApp (perfil Chrome local)
 .whatsapp_profile/
-
-# Logs gerados pelo script
+# Logs
+logs/
 *.log
-
-# Cache do Python
+# Temporarios
+_portarias_encontradas.pdf
+# Python
 __pycache__/
 *.pyc
-*.pyo
-
-# Ambientes virtuais
-.venv/
-venv/
-env/
-
-# Arquivos do sistema Windows
-Thumbs.db
-desktop.ini
-
-# pytest
 .pytest_cache/
+# IDEs
+.vscode/
+.idea/
