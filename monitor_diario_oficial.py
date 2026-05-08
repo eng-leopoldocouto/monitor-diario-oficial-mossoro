@@ -48,8 +48,7 @@ NOMES_MONITORADOS = [
     "MARIA LUCINEIDE VIDAL RODRIGUES",
     "DEIVISON TAEMY DIAS DA SILVA",
     "ALAERDSON NASCIMENTO DE LIMA",
-    "GEORGIANY PAULA BESSA CAMPELO", #APAGAR DEPOIS
-    "LARYSSA RAYANE DE OLIVEIRA SILVA"
+    "EDNARDO PEREIRA DE PAIVA", #APAGAR DEPOIS
 ]
 
 # TODO: coloque o nome exato do grupo do WhatsApp onde a mensagem será enviada
@@ -535,34 +534,54 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
     btn_clipe.click()
     time.sleep(1)
 
-    # Localiza o input[type="file"] exposto após abrir o menu de anexos
-    # Em vez de clicar em "Documento" (que abre diálogo do OS, inacessível ao Selenium),
-    # enviamos o caminho diretamente ao input de arquivo via send_keys.
+    # Localiza o input[type="file"] para documentos.
+    # O WhatsApp Web costuma expor dois inputs: um para mídia (accept="image/*,video/*")
+    # e outro para documentos (accept="*" ou sem imagem no accept).
+    # Enviamos o caminho diretamente ao input correto, sem passar pelo diálogo do OS.
     input_arquivo = None
     try:
         inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
-        if inputs:
-            input_arquivo = inputs[0]
-            log.info(f"Input de arquivo encontrado ({len(inputs)} disponível/eis).")
-    except Exception:
-        pass
+        log.info(f"Input(s) de arquivo encontrado(s): {len(inputs)} disponível/eis.")
+        # Prefere o input que NÃO é exclusivo de imagem/vídeo (= input de documentos)
+        for inp in inputs:
+            accept = (inp.get_attribute("accept") or "").lower()
+            if "image" not in accept:
+                input_arquivo = inp
+                log.info(f"Input para documentos selecionado (accept='{accept}').")
+                break
+        # Fallback: usa o último input disponível
+        if input_arquivo is None and inputs:
+            input_arquivo = inputs[-1]
+            log.info("Nenhum input sem 'image' no accept — usando o último como fallback.")
+    except Exception as e:
+        log.error(f"Erro ao localizar input de arquivo: {e}")
 
     if input_arquivo is None:
         raise Exception("Input de arquivo não encontrado após abrir menu de anexos.")
 
-    # Garante que o input esteja interagível e envia o caminho do arquivo
-    driver.execute_script("arguments[0].style.display = 'block';", input_arquivo)
+    # Garante que o input esteja interagível e envia o caminho absoluto do arquivo.
+    # IMPORTANTE: nunca use send_keys(Keys.ENTER) em input[type="file"] — o ChromeDriver
+    # interpreta qualquer string enviada como caminho de arquivo e lança "File not found".
+    driver.execute_script(
+        "arguments[0].style.display='block';"
+        "arguments[0].style.visibility='visible';"
+        "arguments[0].removeAttribute('hidden');",
+        input_arquivo,
+    )
     input_arquivo.send_keys(caminho_abs)
     log.info("Caminho do arquivo enviado ao input.")
-    time.sleep(3)  # Aguarda pré-visualização do arquivo carregar
+    time.sleep(4)  # Aguarda pré-visualização do arquivo carregar
 
-    # Clica no botão de enviar
+    # Clica no botão de enviar da pré-visualização do anexo.
+    # Os data-testid e aria-label variam conforme a versão do WhatsApp Web.
     xpaths_enviar = [
         '//span[@data-testid="send"]',
         '//div[@aria-label="Enviar"]',
         '//div[@aria-label="Send"]',
         '//button[@aria-label="Enviar"]',
         '//button[@aria-label="Send"]',
+        '//span[@aria-label="Enviar"]',
+        '//span[@aria-label="Send"]',
     ]
     for xpath in xpaths_enviar:
         try:
@@ -570,16 +589,35 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
                 EC.element_to_be_clickable((By.XPATH, xpath))
             )
             btn_enviar.click()
-            log.info("PDF enviado com sucesso!")
+            log.info(f"PDF enviado com sucesso! (via {xpath})")
             time.sleep(3)
             return
         except Exception:
             pass
 
-    # Fallback: Enter dispara o envio do arquivo pré-visualizado
-    input_arquivo.send_keys(Keys.ENTER)
-    log.info("PDF enviado via Enter (fallback).")
-    time.sleep(3)
+    # Fallback via JavaScript: clica no primeiro botão de enviar visível na pré-visualização
+    try:
+        enviado = driver.execute_script("""
+            var seletores = ['[data-testid="send"]', '[aria-label="Enviar"]', '[aria-label="Send"]'];
+            for (var sel of seletores) {
+                var btns = document.querySelectorAll(sel);
+                for (var b of btns) {
+                    if (b.offsetParent !== null) { b.click(); return true; }
+                }
+            }
+            return false;
+        """)
+        if enviado:
+            log.info("PDF enviado com sucesso via JavaScript fallback.")
+            time.sleep(3)
+            return
+    except Exception as e:
+        log.warning(f"Fallback JavaScript falhou: {e}")
+
+    raise Exception(
+        "Botão de enviar não encontrado após upload do PDF. "
+        "Verifique se a pré-visualização do arquivo foi carregada corretamente."
+    )
 
 
 def enviar_whatsapp(mensagem: str, grupo: str, caminho_pdf: str = None) -> bool:
@@ -796,7 +834,7 @@ def main():
 
     # 5. Formata a mensagem de texto
     mensagem = formatar_mensagem(ocorrencias, data_anterior)
-    log.info(f"Mensagem formatada:\n{mensagem}")
+    #log.info(f"Mensagem formatada:\n{mensagem}")
 
     # 6. Busca o PDF da publicação e extrai as páginas das portarias encontradas
     titulos_encontrados = [oc["portaria"]["titulo"] for oc in ocorrencias]
