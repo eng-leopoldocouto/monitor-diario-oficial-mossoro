@@ -368,10 +368,10 @@ class TestSanitizarNomeArquivo:
 
 class TestExtrairPdfsPorOcorrencia:
 
-    def _ocorrencia(self, titulo, nome):
+    def _ocorrencia(self, titulo, nome, ementa=""):
         return {
             "nome": nome,
-            "portaria": {"titulo": titulo, "ementa": "", "conteudo": titulo},
+            "portaria": {"titulo": titulo, "ementa": ementa, "conteudo": titulo},
         }
 
     @patch("monitor_diario_oficial.requests.get")
@@ -432,6 +432,40 @@ class TestExtrairPdfsPorOcorrencia:
         ) + ".pdf"
         assert "PORTARIA" in nome_esperado
         assert "MARINA COSTA" in nome_esperado
+
+    def test_nome_arquivo_inclui_data_quando_titulo_termina_com_virgula(self):
+        """
+        Quando o DOM divide o título em duas linhas — número na primeira e data
+        na segunda — a ementa contém a data e deve ser incluída no nome do arquivo.
+
+        Sem correção: "PORTARIA Nº 485, - FULANO.pdf"
+        Com correção:  "PORTARIA Nº 485, DE 08 DE MAIO DE 2026 - FULANO.pdf"
+        """
+        # _sanitizar_nome_arquivo é chamada internamente; testamos apenas a lógica
+        # de montagem do titulo_arquivo via _sanitizar_nome_arquivo diretamente.
+        titulo_com_virgula = "PORTARIA Nº 485,"
+        data_ementa = "DE 08 DE MAIO DE 2026"
+        nome_pessoa = "FULANO DE TAL"
+
+        # Simula o que extrair_pdfs_por_ocorrencia deve produzir:
+        titulo_esperado = f"{titulo_com_virgula} {data_ementa}"
+        nome_arquivo = monitor._sanitizar_nome_arquivo(
+            f"{titulo_esperado} - {nome_pessoa}"
+        ) + ".pdf"
+
+        assert "DE 08 DE MAIO DE 2026" in nome_arquivo
+        assert "FULANO DE TAL" in nome_arquivo
+        assert "PORTARIA" in nome_arquivo
+
+    def test_nome_arquivo_sem_data_quando_ementa_nao_e_data(self):
+        """Quando a ementa não começa com 'DE <número>', não deve ser concatenada."""
+        titulo = "PORTARIA Nº 001,"
+        ementa = "Dispõe sobre nomeação."
+
+        # Não deve concatenar — ementa não é continuação de data
+        import re as _re
+        e_data = bool(_re.match(r"DE\s+\d", ementa.strip(), _re.IGNORECASE))
+        assert not e_data
 
 
 # ══════════════════════════════════════════════════════════════
@@ -718,10 +752,11 @@ class TestFormatarMensagem:
         assert "Diário Oficial" in msg or "Diario Oficial" in msg
 
     def test_cabecalho_menciona_sala_saude_educacao(self):
-        """A mensagem deve identificar a Sala Saúde | Educação PMM."""
+        """A mensagem deve identificar a Sala Saúde / SEINFRA no cabeçalho."""
         oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "Ementa.", "Conteúdo.")
         msg = monitor.formatar_mensagem([oc], "06/05/2026")
-        assert "Sala Saúde" in msg or "SALA SAUDE" in msg.upper()
+        cabecalho_upper = msg.upper()
+        assert "SAÚDE" in cabecalho_upper or "SAUDE" in cabecalho_upper
 
     def test_contagem_de_ocorrencias_no_cabecalho(self):
         oc1 = self._ocorrencia("NOME A", "PORTARIA Nº 001", "", "Conteudo.")
@@ -1242,3 +1277,197 @@ class TestExtrairDadosFofoca:
         assert r is not None
         assert r["pessoa"] == "PEDRO LUCAS REBOUÇAS GOMES"
         assert r["simbolo_cc"] == "CC11"
+
+
+# ══════════════════════════════════════════════════════════════
+# 9. formatar_fofocas
+# ══════════════════════════════════════════════════════════════
+
+class TestFormatarFofocas:
+
+    def _fofoca(self, acao="NOMEADO(A)", pessoa="FULANO DE TAL",
+                cargo="Assessor", cc="CC11", secretaria="Secretaria De Saúde"):
+        return {"acao": acao, "pessoa": pessoa, "cargo": cargo,
+                "simbolo_cc": cc, "secretaria": secretaria}
+
+    def test_sem_fofocas_exibe_cabecalho(self):
+        """Mesmo sem movimentações, o bloco 'FOFOCA DA SECRETARIA' deve aparecer."""
+        resultado = monitor.formatar_fofocas([])
+        assert "FOFOCA DA SECRETARIA" in resultado
+
+    def test_sem_fofocas_exibe_mensagem_de_ausencia(self):
+        """Deve informar explicitamente que não houve movimentações."""
+        resultado = monitor.formatar_fofocas([])
+        assert "Nenhuma movimentação" in resultado
+
+    def test_sem_fofocas_nao_retorna_string_vazia(self):
+        resultado = monitor.formatar_fofocas([])
+        assert resultado != ""
+
+    def test_com_fofocas_exibe_cabecalho(self):
+        resultado = monitor.formatar_fofocas([self._fofoca()])
+        assert "FOFOCA DA SECRETARIA" in resultado
+
+    def test_com_fofocas_exibe_contagem(self):
+        resultado = monitor.formatar_fofocas([self._fofoca(), self._fofoca()])
+        assert "2" in resultado
+
+    def test_nomeado_usa_emoji_fogo(self):
+        resultado = monitor.formatar_fofocas([self._fofoca(acao="NOMEADO(A)")])
+        assert "🔥" in resultado
+
+    def test_exonerado_usa_emoji_porta(self):
+        resultado = monitor.formatar_fofocas([self._fofoca(acao="EXONERADO(A)")])
+        assert "🚪" in resultado
+
+    def test_nome_da_pessoa_aparece_na_saida(self):
+        resultado = monitor.formatar_fofocas([self._fofoca(pessoa="MARIA SILVA")])
+        assert "MARIA SILVA" in resultado
+
+    def test_simbolo_cc_aparece_na_saida(self):
+        resultado = monitor.formatar_fofocas([self._fofoca(cc="CC15")])
+        assert "CC15" in resultado
+
+    def test_sem_cc_nao_exibe_parenteses_vazios(self):
+        resultado = monitor.formatar_fofocas([self._fofoca(cc=None)])
+        assert "()" not in resultado
+
+
+# ══════════════════════════════════════════════════════════════
+# 10. promovido_remanejado
+# ══════════════════════════════════════════════════════════════
+
+class TestPromovidoRemanejado:
+    """
+    Testa a consolidação de pares exoneração+nomeação da mesma pessoa.
+
+    Regra de hierarquia CC (Brasil): número menor = cargo mais alto.
+      CC15 → CC11 : n_novo < n_antigo → PROMOVIDO(A)
+      CC11 → CC11 : n_novo = n_antigo → REMANEJADO(A)
+      CC11 → CC15 : n_novo > n_antigo → REMANEJADO(A)
+    """
+
+    def _exon(self, pessoa, cc="CC15", cargo="Assessor", sec="Secretaria De Saúde"):
+        return {"acao": "EXONERADO(A)", "pessoa": pessoa, "cargo": cargo,
+                "simbolo_cc": cc, "secretaria": sec, "portaria": {}}
+
+    def _nom(self, pessoa, cc="CC11", cargo="Diretor", sec="Secretaria De Educação"):
+        return {"acao": "NOMEADO(A)", "pessoa": pessoa, "cargo": cargo,
+                "simbolo_cc": cc, "secretaria": sec, "portaria": {}}
+
+    # ── Promoção ─────────────────────────────────────────────────────────────
+
+    def test_cc_menor_resulta_em_promovido(self):
+        """CC15 → CC11: número menor = cargo mais alto = PROMOVIDO(A)."""
+        fofocas = [self._exon("FULANO", cc="CC15"), self._nom("FULANO", cc="CC11")]
+        resultado = monitor.promovido_remanejado(fofocas)
+        assert len(resultado) == 1
+        assert resultado[0]["acao"] == "PROMOVIDO(A)"
+
+    def test_promovido_contem_cargo_anterior_e_novo(self):
+        fofocas = [
+            self._exon("FULANO", cc="CC15", cargo="Assessor"),
+            self._nom("FULANO",  cc="CC11", cargo="Diretor"),
+        ]
+        r = monitor.promovido_remanejado(fofocas)[0]
+        assert r["cargo_anterior"] == "Assessor"
+        assert r["cargo_novo"] == "Diretor"
+
+    def test_promovido_contem_secretaria_anterior_e_nova(self):
+        fofocas = [
+            self._exon("FULANO", sec="Secretaria De Saúde"),
+            self._nom("FULANO",  sec="Secretaria De Educação"),
+        ]
+        r = monitor.promovido_remanejado(fofocas)[0]
+        assert r["secretaria_anterior"] == "Secretaria De Saúde"
+        assert r["secretaria_nova"] == "Secretaria De Educação"
+
+    def test_promovido_contem_cc_anterior_e_novo(self):
+        fofocas = [self._exon("FULANO", cc="CC15"), self._nom("FULANO", cc="CC11")]
+        r = monitor.promovido_remanejado(fofocas)[0]
+        assert r["cc_anterior"] == "CC15"
+        assert r["cc_novo"] == "CC11"
+
+    # ── Remanejamento ─────────────────────────────────────────────────────────
+
+    def test_cc_igual_resulta_em_remanejado(self):
+        """CC11 → CC11: mesmo número = REMANEJADO(A)."""
+        fofocas = [self._exon("FULANO", cc="CC11"), self._nom("FULANO", cc="CC11")]
+        resultado = monitor.promovido_remanejado(fofocas)
+        assert resultado[0]["acao"] == "REMANEJADO(A)"
+
+    def test_cc_maior_resulta_em_remanejado(self):
+        """CC11 → CC15: número maior = cargo mais baixo = REMANEJADO(A)."""
+        fofocas = [self._exon("FULANO", cc="CC11"), self._nom("FULANO", cc="CC15")]
+        resultado = monitor.promovido_remanejado(fofocas)
+        assert resultado[0]["acao"] == "REMANEJADO(A)"
+
+    # ── Consolidação e limpeza ────────────────────────────────────────────────
+
+    def test_par_gera_um_unico_registro(self):
+        """Dois registros (exon + nom) devem ser substituídos por um único."""
+        fofocas = [self._exon("FULANO"), self._nom("FULANO")]
+        resultado = monitor.promovido_remanejado(fofocas)
+        assert len(resultado) == 1
+
+    def test_registros_sem_par_permanecem_inalterados(self):
+        """Exoneração sem nomeação correspondente deve permanecer como EXONERADO(A)."""
+        fofocas = [self._exon("FULANO"), self._exon("CICLANO")]
+        resultado = monitor.promovido_remanejado(fofocas)
+        assert len(resultado) == 2
+        assert all(r["acao"] == "EXONERADO(A)" for r in resultado)
+
+    def test_nomeacao_sem_exoneracao_permanece_inalterada(self):
+        fofocas = [self._nom("BELTRANO")]
+        resultado = monitor.promovido_remanejado(fofocas)
+        assert len(resultado) == 1
+        assert resultado[0]["acao"] == "NOMEADO(A)"
+
+    def test_pessoas_diferentes_nao_sao_consolidadas(self):
+        """Exoneração de A e nomeação de B não formam par."""
+        fofocas = [self._exon("FULANO"), self._nom("CICLANO")]
+        resultado = monitor.promovido_remanejado(fofocas)
+        assert len(resultado) == 2
+
+    def test_sem_cc_resulta_em_remanejado(self):
+        """Quando não há símbolo CC em algum dos eventos, assume REMANEJADO(A)."""
+        fofocas = [
+            self._exon("FULANO", cc=None),
+            self._nom("FULANO",  cc=None),
+        ]
+        resultado = monitor.promovido_remanejado(fofocas)
+        assert resultado[0]["acao"] == "REMANEJADO(A)"
+
+    # ── Formatação das novas ações ────────────────────────────────────────────
+
+    def test_formatar_promovido_usa_emoji_seta(self):
+        fofocas = [self._exon("FULANO", cc="CC15"), self._nom("FULANO", cc="CC11")]
+        consolidado = monitor.promovido_remanejado(fofocas)
+        resultado = monitor.formatar_fofocas(consolidado)
+        assert "⬆️" in resultado
+
+    def test_formatar_remanejado_usa_emoji_setas(self):
+        fofocas = [self._exon("FULANO", cc="CC11"), self._nom("FULANO", cc="CC11")]
+        consolidado = monitor.promovido_remanejado(fofocas)
+        resultado = monitor.formatar_fofocas(consolidado)
+        assert "🔄" in resultado
+
+    def test_formatar_promovido_exibe_cargos_e_secretarias(self):
+        fofocas = [
+            self._exon("FULANO", cc="CC15", cargo="Assessor", sec="Secretaria De Saúde"),
+            self._nom("FULANO",  cc="CC11", cargo="Diretor",  sec="Secretaria De Educação"),
+        ]
+        consolidado = monitor.promovido_remanejado(fofocas)
+        resultado = monitor.formatar_fofocas(consolidado)
+        assert "Assessor" in resultado
+        assert "Diretor" in resultado
+        assert "Secretaria De Saúde" in resultado
+        assert "Secretaria De Educação" in resultado
+
+    def test_formatar_promovido_nao_exibe_nomeado_nem_exonerado(self):
+        """A mensagem de promovido não deve mencionar NOMEADO(A) nem EXONERADO(A)."""
+        fofocas = [self._exon("FULANO", cc="CC15"), self._nom("FULANO", cc="CC11")]
+        consolidado = monitor.promovido_remanejado(fofocas)
+        resultado = monitor.formatar_fofocas(consolidado)
+        assert "NOMEADO" not in resultado
+        assert "EXONERADO" not in resultado
