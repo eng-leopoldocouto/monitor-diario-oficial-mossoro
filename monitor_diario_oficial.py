@@ -79,8 +79,8 @@ _NOMES_SALA_SAUDE_EDUCACAO = [
     "MARIA LUCINEIDE VIDAL RODRIGUES",
     "DEIVISON TAEMY DIAS DA SILVA",
     "ALAERDSON NASCIMENTO DE LIMA",
-    #"MARINA COSTA RODRIGUES DA SILVA",  # TODO: remover após validação
-    #"LUCIENE MARIA DO NASCIMENTO"
+    "LUCAS PAULO RIBEIRO DE OLIVEIRA",  # TODO: remover após validação
+
 ]
 NOMES_MONITORADOS: list[str] = _ler_lista_env("NOMES_MONITORADOS", _NOMES_SALA_SAUDE_EDUCACAO)
 
@@ -88,7 +88,7 @@ NOMES_MONITORADOS: list[str] = _ler_lista_env("NOMES_MONITORADOS", _NOMES_SALA_S
 # Pode ser sobrescrita via variável de ambiente SECRETARIAS_MOSSORO (separadas por vírgula)
 _SECRETARIAS_PADRAO = [
     "SECRETARIA MUNICIPAL DE INFRAESTRUTURA",
-    '''"SECRETARIA MUNICIPAL DE SAÚDE",
+    "SECRETARIA MUNICIPAL DE SAÚDE",
     "SECRETARIA MUNICIPAL DE EDUCAÇÃO",
     "SECRETARIA MUNICIPAL DE FINANÇAS",
     "SECRETARIA MUNICIPAL DE ADMINISTRAÇÃO",
@@ -109,7 +109,7 @@ _SECRETARIAS_PADRAO = [
     "SECRETARIA MUNICIPAL DE DEFESA CIVIL",
     "GABINETE DO PREFEITO",
     "PROCURADORIA GERAL DO MUNICÍPIO",
-    "CONTROLADORIA GERAL DO MUNICÍPIO",'''
+    "CONTROLADORIA GERAL DO MUNICÍPIO",
 ]
 SECRETARIAS_MOSSORO: list[str] = _ler_lista_env("SECRETARIAS_MOSSORO", _SECRETARIAS_PADRAO)
 
@@ -731,39 +731,137 @@ def detectar_fofocas(portarias: list[dict], secretarias: list[str]) -> list[dict
     return fofocas
 
 
+def promovido_remanejado(fofocas: list[dict]) -> list[dict]:
+    """
+    Consolida pares exoneração + nomeação da mesma pessoa em um único evento.
+
+    Quando alguém é exonerado de um cargo e nomeado em outro na mesma edição,
+    os dois registros separados são substituídos por um único registro com ação:
+      PROMOVIDO(A)  — novo símbolo CC tem número MENOR  (cargo mais alto na hierarquia)
+      REMANEJADO(A) — novo símbolo CC tem número IGUAL ou MAIOR (mesmo nível ou abaixo)
+
+    Registros sem par (só exoneração ou só nomeação) permanecem inalterados.
+
+    Exemplo:
+      CC15 → CC11 : n_novo (11) < n_antigo (15) → PROMOVIDO(A)
+      CC11 → CC11 : n_novo (11) = n_antigo (11) → REMANEJADO(A)
+      CC11 → CC15 : n_novo (15) > n_antigo (11) → REMANEJADO(A)
+    """
+    exoneracoes = {f["pessoa"]: f for f in fofocas if "EXONERADO" in f.get("acao", "")}
+    nomeacoes   = {f["pessoa"]: f for f in fofocas if "NOMEADO"   in f.get("acao", "")}
+
+    pessoas_consolidadas: set[str] = set()
+    consolidados: list[dict] = []
+
+    for pessoa, exon in exoneracoes.items():
+        if pessoa not in nomeacoes:
+            continue
+
+        nom = nomeacoes[pessoa]
+        pessoas_consolidadas.add(pessoa)
+
+        cc_ant_str = exon.get("simbolo_cc") or ""
+        cc_nov_str = nom.get("simbolo_cc")  or ""
+
+        # Extrai o número do símbolo CC para comparação (ex: "CC11" → 11)
+        m_ant = re.search(r'\d+', cc_ant_str)
+        m_nov = re.search(r'\d+', cc_nov_str)
+
+        if m_ant and m_nov and int(m_nov.group()) < int(m_ant.group()):
+            acao = "PROMOVIDO(A)"
+        else:
+            acao = "REMANEJADO(A)"
+
+        consolidados.append({
+            "acao":               acao,
+            "pessoa":             pessoa,
+            "cargo_anterior":     exon.get("cargo", "cargo não identificado"),
+            "secretaria_anterior":exon.get("secretaria", "secretaria não identificada"),
+            "cc_anterior":        exon.get("simbolo_cc"),
+            "cargo_novo":         nom.get("cargo", "cargo não identificado"),
+            "secretaria_nova":    nom.get("secretaria", "secretaria não identificada"),
+            "cc_novo":            nom.get("simbolo_cc"),
+            "portaria_exon":      exon.get("portaria"),
+            "portaria_nom":       nom.get("portaria"),
+        })
+        log.info(
+            f"{acao}: {pessoa} | "
+            f"{exon.get('secretaria')} → {nom.get('secretaria')}"
+        )
+
+    # Mantém registros sem par (exoneração ou nomeação sem correspondente)
+    restantes = [f for f in fofocas if f["pessoa"] not in pessoas_consolidadas]
+
+    return consolidados + restantes
+
+
 def formatar_fofocas(fofocas: list[dict]) -> str:
     """
     Gera a seção "Fofoca da Secretaria" em formato informal/divertido
     para ser anexada à mensagem principal do WhatsApp.
-    Retorna string vazia se não houver fofocas.
+    Sempre exibe o cabeçalho da seção — quando vazia, informa que não houve movimentações.
     """
-    if not fofocas:
-        return ""
-
     linhas = [
         "",
         "━━━━━━━━━━━━━━━━━━",
         "🗣️ *FOFOCA DA SECRETARIA*",
+    ]
+
+    if not fofocas:
+        linhas += [
+            "_Silêncio💤 absoluto nos bastidores...\nNenhuma movimentação de pessoal detectada nesta edição._",
+            "",
+        ]
+        return "\n".join(linhas)
+
+    linhas += [
         f"_{len(fofocas)} movimentação(ões) de pessoal detectada(s)_",
         "",
     ]
 
     for fofoca in fofocas:
-        pessoa     = fofoca.get("pessoa", "???")
-        acao       = fofoca.get("acao", "???")
-        cargo      = fofoca.get("cargo", "cargo não identificado")
-        cc         = fofoca.get("simbolo_cc")
-        secretaria = fofoca.get("secretaria", "secretaria não identificada")
-        cc_str     = f" ({cc})" if cc else ""
+        pessoa = fofoca.get("pessoa", "???")
+        acao   = fofoca.get("acao", "???")
 
-        if "NOMEADO" in acao:
+        if acao in ("PROMOVIDO(A)", "REMANEJADO(A)"):
+            c_ant  = fofoca.get("cargo_anterior", "cargo não identificado")
+            cc_ant = fofoca.get("cc_anterior")
+            s_ant  = fofoca.get("secretaria_anterior", "secretaria não identificada")
+            c_nov  = fofoca.get("cargo_novo", "cargo não identificado")
+            cc_nov = fofoca.get("cc_novo")
+            s_nov  = fofoca.get("secretaria_nova", "secretaria não identificada")
+            cc_ant_str = f" ({cc_ant})" if cc_ant else ""
+            cc_nov_str = f" ({cc_nov})" if cc_nov else ""
+
+            if acao == "PROMOVIDO(A)":
+                texto = (
+                    f"🔝 *{pessoa}* foi *PROMOVIDO(A)*!\n"
+                    f"   Antes: _{c_ant}{cc_ant_str}_ na _{s_ant}_\n"
+                    f"   Agora: _{c_nov}{cc_nov_str}_ na _{s_nov}_"
+                )
+            else:
+                texto = (
+                    f"🔄 *{pessoa}* foi *REMANEJADO(A)*.\n"
+                    f"   Antes: _{c_ant}{cc_ant_str}_ na _{s_ant}_\n"
+                    f"   Agora: _{c_nov}{cc_nov_str}_ na _{s_nov}_"
+                )
+
+        elif "NOMEADO" in acao:
+            cargo      = fofoca.get("cargo", "cargo não identificado")
+            cc         = fofoca.get("simbolo_cc")
+            secretaria = fofoca.get("secretaria", "secretaria não identificada")
+            cc_str     = f" ({cc})" if cc else ""
             texto = (
                 f"🔥 *{pessoa}* foi *NOMEADO(A)* no cargo de "
                 f"_{cargo}{cc_str}_ na _{secretaria}_!"
             )
         else:
+            cargo      = fofoca.get("cargo", "cargo não identificado")
+            cc         = fofoca.get("simbolo_cc")
+            secretaria = fofoca.get("secretaria", "secretaria não identificada")
+            cc_str     = f" ({cc})" if cc else ""
             texto = (
-                f"👋 *{pessoa}* saiu de cena! Foi *EXONERADO(A)* "
+                f"🚪 *{pessoa}* deixou a casa! Foi *EXONERADO(A)* "
                 f"do cargo de _{cargo}{cc_str}_ na _{secretaria}_."
             )
 
@@ -778,8 +876,8 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str, secao_fofoca: str 
     Formata a mensagem de WhatsApp com as ocorrências encontradas.
     """
     linhas = [
-        f"🔔 *ALERTA — Diário Oficial de Mossoró*",
-        f"💉🎓 *Sala Saúde | Educação PMM*",
+        f"📢 *MONITORAMENTO — Diário Oficial de Mossoró*\n",
+        f"👥 *Sala: SAÚDE | EDUCAÇÃO SEINFRA 💉🎓*\n",
         f"📅 Edição: {data_str}",
         f"🔍 {len(ocorrencias)} ocorrência(s) encontrada(s)\n",
     ]
@@ -882,19 +980,25 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
         writer = PdfWriter()
         paginas_incluidas: list[int] = []
 
+        # Localiza a página inicial onde o título da portaria aparece
+        pagina_inicio: int | None = None
         for num, page in enumerate(reader.pages):
             texto_pag = _normalizar(page.extract_text() or "")
-            if titulo_norm not in texto_pag:
-                continue
-            writer.add_page(page)
-            paginas_incluidas.append(num + 1)
-            # Inclui a próxima página se a portaria se estender e não iniciar novo ato
-            if num + 1 < len(reader.pages):
-                prox = reader.pages[num + 1]
-                texto_prox = _normalizar(prox.extract_text() or "")
-                if not any(t in texto_prox for t in todos_titulos_norm):
-                    writer.add_page(prox)
-                    paginas_incluidas.append(num + 2)
+            if titulo_norm in texto_pag:
+                pagina_inicio = num
+                break
+
+        if pagina_inicio is not None:
+            # A partir da página inicial, avança até encontrar outro título ou EOF
+            outros_titulos = [t for t in todos_titulos_norm if t != titulo_norm]
+            for num in range(pagina_inicio, len(reader.pages)):
+                page = reader.pages[num]
+                texto_pag = _normalizar(page.extract_text() or "")
+                # Para quando uma página posterior contém outro título de portaria
+                if num > pagina_inicio and any(t in texto_pag for t in outros_titulos):
+                    break
+                writer.add_page(page)
+                paginas_incluidas.append(num + 1)
 
         if not paginas_incluidas:
             log.warning(f"Nenhuma página encontrada para '{titulo}' — ocorrência pulada.")
@@ -903,7 +1007,14 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
         paginas_incluidas = sorted(set(paginas_incluidas))
         log.info(f"Páginas {paginas_incluidas} extraídas para '{nome}'.")
 
-        nome_arquivo = _sanitizar_nome_arquivo(f"{titulo} - {nome}") + ".pdf"
+        # Quando o título termina em vírgula e a ementa é a continuação da data
+        # ("DE 08 DE MAIO DE 2026"), o DOM separou em duas linhas — junta para o nome.
+        ementa = oc["portaria"].get("ementa", "")
+        if titulo.rstrip().endswith(",") and re.match(r"DE\s+\d", ementa.strip(), re.IGNORECASE):
+            titulo_arquivo = f"{titulo.rstrip()} {ementa.strip()}"
+        else:
+            titulo_arquivo = titulo
+        nome_arquivo = _sanitizar_nome_arquivo(f"{titulo_arquivo} - {nome}") + ".pdf"
         caminho_saida = os.path.join(pasta, nome_arquivo)
         with open(caminho_saida, "wb") as f:
             writer.write(f)
@@ -1349,18 +1460,20 @@ def main():
     # 4a. Detecta movimentações de pessoal nas secretarias (Fofoca da Secretaria)
     fofocas = detectar_fofocas(portarias, SECRETARIAS_MOSSORO)
 
-    # 4b. Formata a seção de fofocas (string vazia se não houver nenhuma)
+    # 4a1. Consolida pares exoneração+nomeação da mesma pessoa em promovido/remanejado
+    fofocas = promovido_remanejado(fofocas)
+
+    # 4b. Formata a seção de fofocas (sempre exibe o bloco, mesmo sem movimentações)
     secao_fofoca = formatar_fofocas(fofocas)
-    if fofocas:
-        log.info(f"{len(fofocas)} fofoca(s) incluída(s) na mensagem.")
+    log.info(f"{len(fofocas)} fofoca(s) incluída(s) na mensagem.")
 
     if not ocorrencias:
         log.info("Nenhum nome monitorado encontrado — enviando aviso ao WhatsApp.")
         mensagem_vazia = (
-            f"🔔 *ALERTA — Diário Oficial de Mossoró*\n"
-            f"💉🎓 *Sala Saúde | Educação PMM*\n"
+            f"📢 *MONITORAMENTO — Diário Oficial de Mossoró*\n"
+            f"👥 *Sala: SAÚDE | EDUCAÇÃO SEINFRA 💉🎓*\n"
             f"📅 Edição: {publicacao['data']}\n\n"
-            f"✅ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."
+            f"❌ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."
         )
         if secao_fofoca:
             mensagem_vazia += secao_fofoca
