@@ -70,17 +70,48 @@ def _ler_lista_env(chave: str, padrao: list[str]) -> list[str]:
     return padrao
 
 
-# Nomes a monitorar (TODO: edite a lista padrão abaixo ou defina NOMES_MONITORADOS no .env)
-_NOMES_PADRAO = [
+# Nomes monitorados pela Sala Saúde | Educação PMM
+# (edite abaixo ou defina NOMES_MONITORADOS no .env)
+_NOMES_SALA_SAUDE_EDUCACAO = [
     "JOSÉ LEOPOLDO DANTAS COUTO",
     "JOSE LEOPOLDO DANTAS COUTO",
     "CARLA VANNESSA DA ROCHA",
     "MARIA LUCINEIDE VIDAL RODRIGUES",
     "DEIVISON TAEMY DIAS DA SILVA",
     "ALAERDSON NASCIMENTO DE LIMA",
-    "EDNARDO PEREIRA DE PAIVA",  # TODO: remover após validação
+    #"MARINA COSTA RODRIGUES DA SILVA",  # TODO: remover após validação
+    #"LUCIENE MARIA DO NASCIMENTO"
 ]
-NOMES_MONITORADOS: list[str] = _ler_lista_env("NOMES_MONITORADOS", _NOMES_PADRAO)
+NOMES_MONITORADOS: list[str] = _ler_lista_env("NOMES_MONITORADOS", _NOMES_SALA_SAUDE_EDUCACAO)
+
+# Secretarias municipais de Mossoró monitoradas para "Fofoca da Secretaria"
+# Pode ser sobrescrita via variável de ambiente SECRETARIAS_MOSSORO (separadas por vírgula)
+_SECRETARIAS_PADRAO = [
+    "SECRETARIA MUNICIPAL DE INFRAESTRUTURA",
+    '''"SECRETARIA MUNICIPAL DE SAÚDE",
+    "SECRETARIA MUNICIPAL DE EDUCAÇÃO",
+    "SECRETARIA MUNICIPAL DE FINANÇAS",
+    "SECRETARIA MUNICIPAL DE ADMINISTRAÇÃO",
+    "SECRETARIA MUNICIPAL DE ASSISTÊNCIA SOCIAL",
+    "SECRETARIA MUNICIPAL DE PLANEJAMENTO",
+    "SECRETARIA MUNICIPAL DE MEIO AMBIENTE",
+    "SECRETARIA MUNICIPAL DE AGRICULTURA",
+    "SECRETARIA MUNICIPAL DE HABITAÇÃO",
+    "SECRETARIA MUNICIPAL DE TURISMO",
+    "SECRETARIA MUNICIPAL DE CULTURA",
+    "SECRETARIA MUNICIPAL DE ESPORTES",
+    "SECRETARIA MUNICIPAL DE SEGURANÇA",
+    "SECRETARIA MUNICIPAL DE TRANSPORTES",
+    "SECRETARIA MUNICIPAL DE COMUNICAÇÃO",
+    "SECRETARIA MUNICIPAL DE DESENVOLVIMENTO ECONÔMICO",
+    "SECRETARIA MUNICIPAL DE OBRAS",
+    "SECRETARIA MUNICIPAL DE SERVIÇOS URBANOS",
+    "SECRETARIA MUNICIPAL DE DEFESA CIVIL",
+    "GABINETE DO PREFEITO",
+    "PROCURADORIA GERAL DO MUNICÍPIO",
+    "CONTROLADORIA GERAL DO MUNICÍPIO",'''
+]
+SECRETARIAS_MOSSORO: list[str] = _ler_lista_env("SECRETARIAS_MOSSORO", _SECRETARIAS_PADRAO)
 
 # Nome exato do grupo do WhatsApp (TODO: edite aqui ou defina WHATSAPP_GRUPO no .env)
 WHATSAPP_GRUPO: str = os.environ.get(
@@ -382,6 +413,54 @@ def buscar_publicacao_por_data(data_str: str) -> dict | None:
             return None
 
 
+def buscar_ultima_publicacao() -> dict | None:
+    """
+    Retorna a publicação mais recente do Diário Oficial de Mossoró —
+    o primeiro card exibido na página de edições (item em destaque).
+
+    Não filtra por data; sempre pega o topo da listagem.
+
+    Retorna dicionário com:
+        id       - ID numérico da publicação
+        data     - data formatada (DD/MM/AAAA) extraída do card
+        url_html - URL da página com o conteúdo
+    """
+    log.info("Buscando última edição do DOM (primeiro card do site)...")
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; DOM-Monitor/1.0)"}
+    url = f"{BASE_URL}/dom/edicoes"
+    try:
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        log.error(f"Erro ao acessar página de edições: {e}")
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    cards = soup.select("a[href^='/dom/publicacao/']")
+
+    if not cards:
+        log.warning("Nenhuma edição encontrada na página de edições.")
+        return None
+
+    # Primeiro card = edição mais recente / em destaque
+    card = cards[0]
+    href = card.get("href", "")
+    match = re.search(r"/dom/publicacao/(\d+)", href)
+    if not match:
+        log.error(f"Não foi possível extrair ID da publicação de: {href}")
+        return None
+
+    pub_id = match.group(1)
+    parent = card.find_parent()
+    texto = parent.get_text(" ", strip=True) if parent else ""
+    date_match = re.search(r"(\d{2}/\d{2}/\d{4})", texto)
+    data_str = date_match.group(1) if date_match else "data desconhecida"
+
+    url_html = f"{BASE_URL}/dom/publicacao/{pub_id}"
+    log.info(f"Última edição: ID {pub_id} — {data_str} — {url_html}")
+    return {"id": pub_id, "data": data_str, "url_html": url_html}
+
+
 def extrair_portarias(url_html: str) -> list[dict]:
     """
     Acessa a página HTML da publicação e extrai todas as portarias.
@@ -493,12 +572,214 @@ def buscar_nomes_em_portarias(portarias: list[dict], nomes: list[str]) -> list[d
     return encontrados
 
 
-def formatar_mensagem(ocorrencias: list[dict], data_str: str) -> str:
+def _extrair_dados_fofoca(paragrafo: str, secretaria: str) -> dict | None:
+    """
+    Extrai nome, ação, cargo e símbolo CC de um parágrafo de portaria.
+    Retorna None se não conseguir extrair ação + pessoa mínimos.
+
+    O parágrafo pode chegar em NFKD (vindo de detectar_fofocas) — é normalizado
+    para NFC internamente para que as regexes com acentos compostos funcionem.
+
+    Padrões suportados:
+      NOMEAR: "NOMEAR <NOME> PARA EXERCER O CARGO EM COMISSÃO DE <CARGO>, SÍMBOLO <CC>"
+      EXONERAR: "EXONERAR [A SERVIDORA|O SERVIDOR] <NOME> DO CARGO EM COMISSÃO DE <CARGO>"
+    """
+    # Normaliza para NFC: detectar_fofocas usa NFKD para comparar secretarias,
+    # mas as regexes esperam chars acentuados compostos (ex: "Ã" e não "A"+combining).
+    paragrafo = unicodedata.normalize("NFC", paragrafo)
+    secretaria = unicodedata.normalize("NFC", secretaria)
+
+    MAPA_ACAO = {
+        "NOMEAR":    "NOMEADO(A)",
+        "NOMEIA":    "NOMEADO(A)",
+        "NOMEADO":   "NOMEADO(A)",
+        "NOMEADA":   "NOMEADO(A)",
+        "EXONERAR":  "EXONERADO(A)",
+        "EXONERA":   "EXONERADO(A)",
+        "EXONERADO": "EXONERADO(A)",
+        "EXONERADA": "EXONERADO(A)",
+    }
+
+    # Ação
+    m_acao = re.search(
+        r'\b(NOMEAR|NOMEIA|NOMEADO[A]?|EXONERAR|EXONERA|EXONERADO[A]?)\b',
+        paragrafo,
+    )
+    if not m_acao:
+        return None
+    acao = MAPA_ACAO.get(m_acao.group(1), "NOMEADO(A)")
+
+    # Nome da pessoa — estratégia diferente por tipo de ação:
+    #
+    # NOMEAR: "NOMEAR <NOME> PARA EXERCER..."
+    #   → nome termina antes de "PARA"
+    #
+    # EXONERAR: "EXONERAR [A SERVIDORA|O SERVIDOR] <NOME> DO CARGO..."
+    #   → skipa artigo + "servidor(a)" opcionais; nome termina antes de "DO/DA CARGO"
+    #
+    # Usamos regex gananciosa com backtracking: o grupo captura o máximo possível
+    # de palavras e recua até o lookahead de parada ser satisfeito — isso permite
+    # nomes com preposições internas como "GURGEL DA NOBREGA".
+    _LETRAS = r'[A-ZÁÉÍÓÚÂÊÎÔÛÃÕÀÈÌÒÙÇ]'
+    _PALAVRA = rf'{_LETRAS}+'
+    _NOME_GREED = rf'(?:{_PALAVRA}\s+)*{_PALAVRA}'  # sequência greedy de palavras
+
+    acao_str = m_acao.group(1)
+    m_nome = None
+
+    if acao_str.startswith("NOME"):
+        # NOMEAR / NOMEIA / NOMEADO(A): nome termina antes de "PARA"
+        m_nome = re.search(
+            rf'\b(?:NOMEAR|NOMEIA|NOMEADO[A]?)\s+({_NOME_GREED})(?=\s+PARA\b)',
+            paragrafo,
+        )
+        if not m_nome:
+            # Fallback: captura até 7 palavras maiúsculas (padrão anterior)
+            m_nome = re.search(
+                rf'\b(?:NOMEAR|NOMEIA|NOMEADO[A]?)\s+'
+                rf'((?:{_LETRAS}{{2,}}\s+){{0,6}}{_LETRAS}{{2,}})',
+                paragrafo,
+            )
+    else:
+        # EXONERAR / EXONERA / EXONERADO(A): pula "a servidora" / "o servidor"
+        m_nome = re.search(
+            rf'\b(?:EXONERAR|EXONERA|EXONERADO[A]?)\s+'
+            rf'(?:(?:A|O)\s+)?(?:SERVIDORA?\s+)?'
+            rf'({_NOME_GREED})(?=\s+(?:DO|DA|AO|NO|EM)\s+CARGO\b)',
+            paragrafo,
+        )
+        if not m_nome:
+            # Fallback: pula artigo/servidor mas sem lookahead de parada
+            m_nome = re.search(
+                rf'\b(?:EXONERAR|EXONERA|EXONERADO[A]?)\s+'
+                rf'(?:(?:A|O)\s+)?(?:SERVIDORA?\s+)?'
+                rf'((?:{_LETRAS}{{2,}}\s+){{0,6}}{_LETRAS}{{2,}})',
+                paragrafo,
+            )
+
+    pessoa = m_nome.group(1).strip() if m_nome else "PESSOA NÃO IDENTIFICADA"
+
+    # Cargo — texto após "CARGO EM COMISSÃO DE", "CARGO DE", "FUNÇÃO DE" ou "EMPREGO DE"
+    m_cargo = re.search(
+        r'(?:CARGO\s+(?:EM\s+COMISS[AÃ]O\s+DE|DE)|FUN[CÇ][AÃ]O\s+DE|EMPREGO\s+DE)\s+'
+        r'(.+?)(?:,|\.|S[IÍ]MBOLO\b|(?=\bCC\d))',
+        paragrafo,
+    )
+    cargo = m_cargo.group(1).strip().rstrip(",").strip() if m_cargo else "cargo não identificado"
+
+    # Símbolo CC
+    m_cc = re.search(r'\bCC\s*(\d+)\b', paragrafo)
+    simbolo_cc = f"CC{m_cc.group(1)}" if m_cc else None
+
+    # Converte secretaria de volta para Title Case legível
+    secretaria_fmt = secretaria.title()
+
+    return {
+        "acao": acao,
+        "pessoa": pessoa,
+        "cargo": cargo,
+        "simbolo_cc": simbolo_cc,
+        "secretaria": secretaria_fmt,
+    }
+
+
+def detectar_fofocas(portarias: list[dict], secretarias: list[str]) -> list[dict]:
+    """
+    Varre as portarias extraídas buscando nomeações e exonerações
+    vinculadas a secretarias municipais de Mossoró.
+
+    Um parágrafo dispara a detecção quando contém simultaneamente:
+      - Palavra-chave de movimentação: NOMEAR ou EXONERAR (e variantes)
+      - Nome de uma secretaria da lista
+
+    Retorna lista de dicionários com: acao, pessoa, cargo, simbolo_cc,
+    secretaria, portaria.
+    """
+    fofocas = []
+    secretarias_upper = [unicodedata.normalize("NFKD", s.upper()) for s in secretarias]
+    RE_ACAO = re.compile(
+        r'\b(NOMEAR|NOMEIA|NOMEADO[A]?|EXONERAR|EXONERA|EXONERADO[A]?)\b'
+    )
+
+    for portaria in portarias:
+        conteudo_norm = unicodedata.normalize("NFKD", portaria["conteudo"].upper())
+        paragrafos = [p.strip() for p in conteudo_norm.split("\n") if p.strip()]
+
+        for paragrafo in paragrafos:
+            if not RE_ACAO.search(paragrafo):
+                continue
+
+            secretaria_encontrada = None
+            for sec in secretarias_upper:
+                if sec in paragrafo:
+                    secretaria_encontrada = sec
+                    break
+
+            if not secretaria_encontrada:
+                continue
+
+            dados = _extrair_dados_fofoca(paragrafo, secretaria_encontrada)
+            if dados:
+                dados["portaria"] = portaria
+                fofocas.append(dados)
+                log.info(
+                    f"Fofoca detectada: {dados['acao']} — "
+                    f"{dados['pessoa']} — {dados['secretaria']}"
+                )
+
+    log.info(f"Total de fofocas detectadas: {len(fofocas)}")
+    return fofocas
+
+
+def formatar_fofocas(fofocas: list[dict]) -> str:
+    """
+    Gera a seção "Fofoca da Secretaria" em formato informal/divertido
+    para ser anexada à mensagem principal do WhatsApp.
+    Retorna string vazia se não houver fofocas.
+    """
+    if not fofocas:
+        return ""
+
+    linhas = [
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "🗣️ *FOFOCA DA SECRETARIA*",
+        f"_{len(fofocas)} movimentação(ões) de pessoal detectada(s)_",
+        "",
+    ]
+
+    for fofoca in fofocas:
+        pessoa     = fofoca.get("pessoa", "???")
+        acao       = fofoca.get("acao", "???")
+        cargo      = fofoca.get("cargo", "cargo não identificado")
+        cc         = fofoca.get("simbolo_cc")
+        secretaria = fofoca.get("secretaria", "secretaria não identificada")
+        cc_str     = f" ({cc})" if cc else ""
+
+        if "NOMEADO" in acao:
+            texto = (
+                f"🔥 *{pessoa}* foi *NOMEADO(A)* no cargo de "
+                f"_{cargo}{cc_str}_ na _{secretaria}_!"
+            )
+        else:
+            texto = (
+                f"👋 *{pessoa}* saiu de cena! Foi *EXONERADO(A)* "
+                f"do cargo de _{cargo}{cc_str}_ na _{secretaria}_."
+            )
+
+        linhas.append(texto)
+        linhas.append("")
+
+    return "\n".join(linhas)
+
+
+def formatar_mensagem(ocorrencias: list[dict], data_str: str, secao_fofoca: str = "") -> str:
     """
     Formata a mensagem de WhatsApp com as ocorrências encontradas.
     """
     linhas = [
         f"🔔 *ALERTA — Diário Oficial de Mossoró*",
+        f"💉🎓 *Sala Saúde | Educação PMM*",
         f"📅 Edição: {data_str}",
         f"🔍 {len(ocorrencias)} ocorrência(s) encontrada(s)\n",
     ]
@@ -520,7 +801,10 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str) -> str:
             "",
         ]
 
-    return "\n".join(l for l in linhas if l is not None)
+    mensagem_base = "\n".join(l for l in linhas if l is not None)
+    if secao_fofoca:
+        return mensagem_base + secao_fofoca
+    return mensagem_base
 
 
 def buscar_url_pdf(url_publicacao: str) -> str | None:
@@ -548,28 +832,31 @@ def buscar_url_pdf(url_publicacao: str) -> str | None:
     return url_pdf
 
 
-def extrair_paginas_pdf(url_pdf: str, titulos: list[str]) -> str | None:
+def _sanitizar_nome_arquivo(nome: str) -> str:
+    """Remove caracteres inválidos para nomes de arquivo no Windows/Linux."""
+    return re.sub(r'[\\/:*?"<>|]', '-', nome).strip(" .")
+
+
+def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[str]:
     """
-    Baixa o PDF da publicação, localiza as páginas que contêm os títulos
-    das portarias encontradas e gera um novo PDF com apenas essas páginas.
+    Baixa o PDF da publicação e gera um arquivo PDF separado para cada
+    ocorrência encontrada, contendo apenas as páginas da portaria associada.
 
-    Retorna o caminho do PDF gerado, ou None se falhar ou não encontrar páginas.
+    Nome do arquivo: "{titulo_portaria} - {nome_pessoa}.pdf"
+    Exemplo: "PORTARIA Nº 262, DE 08 DE MAIO DE 2026 - MARINA COSTA.pdf"
 
-    Requer: pip install pypdf
+    Retorna lista de caminhos dos PDFs gerados (vazia se falhar).
     """
     try:
         from pypdf import PdfReader, PdfWriter
     except ImportError:
         log.error("Biblioteca 'pypdf' não instalada. Execute: pip install pypdf")
-        return None
+        return []
 
     def _normalizar(texto: str) -> str:
-        """Remove acentos e converte para maiúsculas para comparação robusta."""
         sem_acento = unicodedata.normalize("NFKD", texto)
         sem_acento = "".join(c for c in sem_acento if not unicodedata.combining(c))
         return sem_acento.upper()
-
-    titulos_norm = [_normalizar(t) for t in titulos]
 
     log.info(f"Baixando PDF: {url_pdf}")
     headers = {"User-Agent": "Mozilla/5.0 (compatible; DOM-Monitor/1.0)"}
@@ -578,43 +865,53 @@ def extrair_paginas_pdf(url_pdf: str, titulos: list[str]) -> str | None:
         resp.raise_for_status()
     except requests.RequestException as e:
         log.error(f"Erro ao baixar PDF: {e}")
-        return None
+        return []
 
     reader = PdfReader(io.BytesIO(resp.content))
-    writer = PdfWriter()
-    paginas_incluidas = []
+    todos_titulos_norm = [
+        _normalizar(oc["portaria"]["titulo"]) for oc in ocorrencias
+    ]
+    pasta = os.path.dirname(os.path.abspath(__file__))
+    caminhos_gerados = []
 
-    for num, page in enumerate(reader.pages):
-        texto_pag = _normalizar(page.extract_text() or "")
-        if any(titulo in texto_pag for titulo in titulos_norm):
+    for oc in ocorrencias:
+        titulo = oc["portaria"]["titulo"]
+        nome   = oc["nome"]
+        titulo_norm = _normalizar(titulo)
+
+        writer = PdfWriter()
+        paginas_incluidas: list[int] = []
+
+        for num, page in enumerate(reader.pages):
+            texto_pag = _normalizar(page.extract_text() or "")
+            if titulo_norm not in texto_pag:
+                continue
             writer.add_page(page)
             paginas_incluidas.append(num + 1)
-            # Inclui a página seguinte caso a portaria se estenda nela
+            # Inclui a próxima página se a portaria se estender e não iniciar novo ato
             if num + 1 < len(reader.pages):
                 prox = reader.pages[num + 1]
                 texto_prox = _normalizar(prox.extract_text() or "")
-                # Só adiciona a próxima se ela não começa um novo ato
-                if not any(titulo in texto_prox for titulo in titulos_norm):
+                if not any(t in texto_prox for t in todos_titulos_norm):
                     writer.add_page(prox)
                     paginas_incluidas.append(num + 2)
 
-    if not paginas_incluidas:
-        log.warning("Nenhuma página do PDF contém os títulos das portarias encontradas.")
-        return None
+        if not paginas_incluidas:
+            log.warning(f"Nenhuma página encontrada para '{titulo}' — ocorrência pulada.")
+            continue
 
-    # Remove duplicatas de página mantendo a ordem
-    paginas_incluidas = sorted(set(paginas_incluidas))
-    log.info(f"Páginas extraídas do PDF: {paginas_incluidas}")
+        paginas_incluidas = sorted(set(paginas_incluidas))
+        log.info(f"Páginas {paginas_incluidas} extraídas para '{nome}'.")
 
-    caminho_saida = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "_portarias_encontradas.pdf",
-    )
-    with open(caminho_saida, "wb") as f:
-        writer.write(f)
+        nome_arquivo = _sanitizar_nome_arquivo(f"{titulo} - {nome}") + ".pdf"
+        caminho_saida = os.path.join(pasta, nome_arquivo)
+        with open(caminho_saida, "wb") as f:
+            writer.write(f)
 
-    log.info(f"PDF com portarias salvo em: {caminho_saida}")
-    return caminho_saida
+        log.info(f"PDF gerado: {caminho_saida}")
+        caminhos_gerados.append(caminho_saida)
+
+    return caminhos_gerados
 
 
 def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
@@ -651,27 +948,59 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
     btn_clipe.click()
     time.sleep(1)
 
+    # Clica em "Documentos" no submenu de anexos.
+    # No WhatsApp Web atual o clipe abre um menu com opções (Fotos, Documentos, etc.).
+    # É obrigatório clicar em "Documentos" para que o input correto fique ativo —
+    # caso contrário o arquivo é enviado para o input de imagens e rejeitado.
+    xpaths_documentos = [
+        '//span[contains(text(),"Documento")]',
+        '//span[contains(text(),"Document")]',
+        '//div[contains(@aria-label,"ocumento")]',
+        '//li[.//span[contains(text(),"ocumento")]]',
+        # Fallback: label cujo input aceita qualquer tipo (não só imagens)
+        '//label[.//input[@type="file"][not(contains(@accept,"image"))]]',
+    ]
+    clicou_documentos = False
+    for xpath in xpaths_documentos:
+        try:
+            btn_docs = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, xpath))
+            )
+            btn_docs.click()
+            log.info(f"Opção 'Documentos' clicada: {xpath}")
+            time.sleep(1)
+            clicou_documentos = True
+            break
+        except Exception:
+            pass
+
+    if not clicou_documentos:
+        log.warning(
+            "Opção 'Documentos' não encontrada no submenu — tentando enviar "
+            "diretamente ao input de arquivo (pode rejeitar PDF)."
+        )
+
     # Localiza o input[type="file"] para documentos.
-    # O WhatsApp Web costuma expor dois inputs: um para mídia (accept="image/*,video/*")
-    # e outro para documentos (accept="*" ou sem imagem no accept).
-    # Enviamos o caminho diretamente ao input correto, sem passar pelo diálogo do OS.
+    # Após clicar em "Documentos", o input correto fica acessível no DOM.
     input_arquivo = None
     try:
         inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
         log.info(f"Input(s) de arquivo encontrado(s): {len(inputs)} disponível/eis.")
-        # Prefere o input que NÃO é exclusivo de imagem/vídeo (= input de documentos)
         for inp in inputs:
             accept = (inp.get_attribute("accept") or "").lower()
+            log.debug(f"  input accept='{accept}'")
             if "image" not in accept:
                 input_arquivo = inp
                 log.info(f"Input para documentos selecionado (accept='{accept}').")
                 break
-        # Fallback: usa o último input disponível
-        if input_arquivo is None and inputs:
-            input_arquivo = inputs[-1]
-            log.info("Nenhum input sem 'image' no accept — usando o último como fallback.")
+        if input_arquivo is None:
+            raise Exception(
+                "Nenhum input de arquivo sem 'image' no accept foi encontrado. "
+                "A opção 'Documentos' pode não ter sido clicada corretamente."
+            )
     except Exception as e:
         log.error(f"Erro ao localizar input de arquivo: {e}")
+        raise
 
     if input_arquivo is None:
         raise Exception("Input de arquivo não encontrado após abrir menu de anexos.")
@@ -687,18 +1016,24 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
     )
     input_arquivo.send_keys(caminho_abs)
     log.info("Caminho do arquivo enviado ao input.")
-    time.sleep(4)  # Aguarda pré-visualização do arquivo carregar
+    time.sleep(8)  # Aguarda pré-visualização do arquivo carregar
 
     # Clica no botão de enviar da pré-visualização do anexo.
-    # Os data-testid e aria-label variam conforme a versão do WhatsApp Web.
+    # Seletor confirmado via inspeção do DOM real do WhatsApp Web (2025):
+    #   div[role="button"] com aria-label contendo "Send" ou "Enviar"
+    #   e ícone interno span[data-testid="wds-ic-send-filled"]
     xpaths_enviar = [
-        '//span[@data-testid="send"]',
-        '//div[@aria-label="Enviar"]',
-        '//div[@aria-label="Send"]',
+        # Versão atual confirmada (2025): ícone wds-ic-send-filled dentro de div[role="button"]
+        '//div[@role="button"][.//span[@data-testid="wds-ic-send-filled"]]',
+        # Por aria-label (varia conforme qtd de arquivos: "Send 1 selected", "Enviar 1 selecionado")
+        '//div[@role="button"][contains(@aria-label,"Send")]',
+        '//div[@role="button"][contains(@aria-label,"Enviar")]',
+        # Fallbacks para versões anteriores
+        '//div[@role="button"][.//span[@data-icon="send"]]',
+        '//button[.//span[@data-testid="wds-ic-send-filled"]]',
+        '//div[@data-testid="compose-btn-send"]',
         '//button[@aria-label="Enviar"]',
         '//button[@aria-label="Send"]',
-        '//span[@aria-label="Enviar"]',
-        '//span[@aria-label="Send"]',
     ]
     for xpath in xpaths_enviar:
         try:
@@ -712,32 +1047,61 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
         except Exception:
             pass
 
-    # Fallback via JavaScript: clica no primeiro botão de enviar visível na pré-visualização
+    # Fallback JavaScript: busca pelo ícone wds-ic-send-filled e sobe até o div[role="button"]
     try:
         enviado = driver.execute_script("""
-            var seletores = ['[data-testid="send"]', '[aria-label="Enviar"]', '[aria-label="Send"]'];
+            var seletores = [
+                '[data-testid="wds-ic-send-filled"]',
+                '[data-icon="wds-ic-send-filled"]',
+                '[data-icon="send"]',
+                '[data-testid="compose-btn-send"]'
+            ];
             for (var sel of seletores) {
-                var btns = document.querySelectorAll(sel);
-                for (var b of btns) {
-                    if (b.offsetParent !== null) { b.click(); return true; }
+                var elems = document.querySelectorAll(sel);
+                for (var el of elems) {
+                    if (el.offsetParent === null) continue;
+                    var alvo = el;
+                    for (var i = 0; i < 8; i++) {
+                        if (!alvo.parentElement) break;
+                        alvo = alvo.parentElement;
+                        if (alvo.getAttribute('role') === 'button' || alvo.tagName === 'BUTTON') break;
+                    }
+                    alvo.click();
+                    return sel;
                 }
             }
-            return false;
+            return null;
         """)
         if enviado:
-            log.info("PDF enviado com sucesso via JavaScript fallback.")
+            log.info(f"PDF enviado com sucesso via JavaScript fallback (seletor: {enviado}).")
             time.sleep(3)
             return
     except Exception as e:
         log.warning(f"Fallback JavaScript falhou: {e}")
 
+    # Diagnóstico: despeja HTML do footer da pré-visualização no log para
+    # identificar os seletores corretos na versão atual do WhatsApp Web.
+    try:
+        html_preview = driver.execute_script("""
+            var footer = document.querySelector(
+                '[data-testid="media-caption-input-container"], ' +
+                '.x1n2onr6[class*="footer"], ' +
+                'footer'
+            );
+            return footer ? footer.outerHTML.substring(0, 3000) : document.body.innerHTML.substring(0, 3000);
+        """)
+        log.debug(f"HTML da área de pré-visualização:\n{html_preview}")
+    except Exception:
+        pass
+
     raise Exception(
         "Botão de enviar não encontrado após upload do PDF. "
-        "Verifique se a pré-visualização do arquivo foi carregada corretamente."
+        "Verifique os logs (nível DEBUG) para ver o HTML da pré-visualização "
+        "e identificar o seletor correto."
     )
 
 
-def enviar_whatsapp(mensagem: str, grupo: str, caminho_pdf: str = None) -> bool:
+def enviar_whatsapp(mensagem: str, grupo: str, caminhos_pdf: list[str] = None) -> bool:
     """
     Envia a mensagem para o grupo do WhatsApp via Selenium + WhatsApp Web.
 
@@ -935,12 +1299,15 @@ def enviar_whatsapp(mensagem: str, grupo: str, caminho_pdf: str = None) -> bool:
         log.info("Mensagem de texto enviada com sucesso!")
         time.sleep(2)
 
-        # Envia o PDF recortado (se disponível)
-        if caminho_pdf and os.path.isfile(caminho_pdf):
-            log.info("Iniciando envio do PDF com as portarias...")
-            _enviar_arquivo_no_grupo(driver, caminho_pdf)
-        elif caminho_pdf:
-            log.warning(f"Arquivo PDF não encontrado: {caminho_pdf}")
+        # Envia cada PDF individualmente (um por ocorrência)
+        if caminhos_pdf:
+            for i, caminho in enumerate(caminhos_pdf, start=1):
+                if os.path.isfile(caminho):
+                    log.info(f"Enviando PDF {i}/{len(caminhos_pdf)}: {os.path.basename(caminho)}")
+                    _enviar_arquivo_no_grupo(driver, caminho)
+                    time.sleep(2)
+                else:
+                    log.warning(f"Arquivo PDF não encontrado: {caminho}")
 
         return True
 
@@ -962,15 +1329,11 @@ def main():
     log.info("Iniciando monitoramento do Diário Oficial de Mossoró")
     log.info("=" * 60)
 
-    # 1. Obtém a data do dia anterior do sistema
-    data_anterior = obter_data_anterior()
-    log.info(f"Data alvo (dia anterior): {data_anterior}")
-
-    # 2. Busca a publicação do DOM para essa data
-    publicacao = buscar_publicacao_por_data(data_anterior)
+    # 1. Busca a publicação mais recente (primeiro card do site)
+    publicacao = buscar_ultima_publicacao()
 
     if not publicacao:
-        log.warning(f"Nenhuma edição do DOM encontrada para {data_anterior}. Encerrando.")
+        log.warning("Não foi possível obter a última edição do DOM. Encerrando.")
         return
 
     # 3. Extrai os atos (portarias, decretos, etc.) da publicação
@@ -983,32 +1346,50 @@ def main():
     # 4. Busca os nomes monitorados nos atos extraídos
     ocorrencias = buscar_nomes_em_portarias(portarias, NOMES_MONITORADOS)
 
+    # 4a. Detecta movimentações de pessoal nas secretarias (Fofoca da Secretaria)
+    fofocas = detectar_fofocas(portarias, SECRETARIAS_MOSSORO)
+
+    # 4b. Formata a seção de fofocas (string vazia se não houver nenhuma)
+    secao_fofoca = formatar_fofocas(fofocas)
+    if fofocas:
+        log.info(f"{len(fofocas)} fofoca(s) incluída(s) na mensagem.")
+
     if not ocorrencias:
-        log.info("Nenhum nome monitorado encontrado na edição de hoje. Nenhuma mensagem enviada.")
+        log.info("Nenhum nome monitorado encontrado — enviando aviso ao WhatsApp.")
+        mensagem_vazia = (
+            f"🔔 *ALERTA — Diário Oficial de Mossoró*\n"
+            f"💉🎓 *Sala Saúde | Educação PMM*\n"
+            f"📅 Edição: {publicacao['data']}\n\n"
+            f"✅ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."
+        )
+        if secao_fofoca:
+            mensagem_vazia += secao_fofoca
+        enviar_whatsapp(mensagem_vazia, WHATSAPP_GRUPO)
         return
 
     log.info(f"{len(ocorrencias)} ocorrência(s) encontrada(s). Preparando envio...")
 
-    # 5. Formata a mensagem de texto
-    mensagem = formatar_mensagem(ocorrencias, data_anterior)
-    #log.info(f"Mensagem formatada:\n{mensagem}")
+    # 5. Formata a mensagem de texto (com fofocas integradas se houver)
+    mensagem = formatar_mensagem(ocorrencias, publicacao["data"], secao_fofoca)
 
-    # 6. Busca o PDF da publicação e extrai as páginas das portarias encontradas
-    titulos_encontrados = [oc["portaria"]["titulo"] for oc in ocorrencias]
+    # 6. Baixa o PDF e gera um arquivo separado por ocorrência
     url_pdf = buscar_url_pdf(publicacao["url_html"])
-    caminho_pdf = None
+    caminhos_pdf = []
     if url_pdf:
-        caminho_pdf = extrair_paginas_pdf(url_pdf, titulos_encontrados)
+        caminhos_pdf = extrair_pdfs_por_ocorrencia(url_pdf, ocorrencias)
+        if not caminhos_pdf:
+            log.warning("Nenhum PDF gerado — apenas a mensagem de texto será enviada.")
     else:
         log.warning("PDF não encontrado — apenas a mensagem de texto será enviada.")
 
-    # 7. Envia mensagem de texto e PDF (se disponível) no WhatsApp
-    sucesso = enviar_whatsapp(mensagem, WHATSAPP_GRUPO, caminho_pdf)
+    # 7. Envia mensagem de texto e PDFs (um por ocorrência) no WhatsApp
+    sucesso = enviar_whatsapp(mensagem, WHATSAPP_GRUPO, caminhos_pdf)
 
-    # 8. Remove o PDF temporário após envio
-    if caminho_pdf and os.path.isfile(caminho_pdf):
-        os.remove(caminho_pdf)
-        log.info("Arquivo PDF temporário removido.")
+    # 8. Remove os PDFs temporários após envio
+    for caminho in caminhos_pdf:
+        if os.path.isfile(caminho):
+            os.remove(caminho)
+            log.info(f"PDF temporário removido: {os.path.basename(caminho)}")
 
     if sucesso:
         log.info("Processo concluído com sucesso!")

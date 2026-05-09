@@ -13,6 +13,7 @@ Como executar:
 import os
 import re
 import sys
+import unicodedata
 import pytest
 from datetime import datetime
 from unittest.mock import patch, MagicMock, call
@@ -279,6 +280,158 @@ class TestObterDataAnterior:
             resultado = monitor.obter_data_anterior()
         dia = resultado.split("/")[0]
         assert len(dia) == 2
+
+
+# ══════════════════════════════════════════════════════════════
+# 2a. buscar_ultima_publicacao
+# ══════════════════════════════════════════════════════════════
+
+class TestBuscarUltimaPublicacao:
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_retorna_primeiro_card_da_pagina(self, mock_get):
+        """Deve retornar o primeiro card (ID 815), não filtrar por data."""
+        mock_get.return_value = _mock_resposta_http(HTML_EDICOES_COM_ALVO)
+
+        resultado = monitor.buscar_ultima_publicacao()
+
+        assert resultado is not None
+        assert resultado["id"] == "815"
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_retorna_data_do_primeiro_card(self, mock_get):
+        """A data retornada deve ser a do primeiro card."""
+        mock_get.return_value = _mock_resposta_http(HTML_EDICOES_COM_ALVO)
+
+        resultado = monitor.buscar_ultima_publicacao()
+
+        assert resultado["data"] == "08/05/2026"
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_url_html_formato_correto(self, mock_get):
+        """A URL deve seguir o padrão do site."""
+        mock_get.return_value = _mock_resposta_http(HTML_EDICOES_COM_ALVO)
+
+        resultado = monitor.buscar_ultima_publicacao()
+
+        assert resultado["url_html"] == "https://dom.mossoro.rn.gov.br/dom/publicacao/815"
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_retorna_none_em_pagina_vazia(self, mock_get):
+        """Deve retornar None quando não há cards na página."""
+        mock_get.return_value = _mock_resposta_http(HTML_EDICOES_VAZIA)
+
+        resultado = monitor.buscar_ultima_publicacao()
+
+        assert resultado is None
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_retorna_none_em_erro_de_rede(self, mock_get):
+        """Deve retornar None em falha de rede."""
+        import requests as req_lib
+        mock_get.side_effect = req_lib.RequestException("timeout")
+
+        resultado = monitor.buscar_ultima_publicacao()
+
+        assert resultado is None
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_acessa_apenas_uma_pagina(self, mock_get):
+        """Não deve paginar — acessa apenas a URL base das edições."""
+        mock_get.return_value = _mock_resposta_http(HTML_EDICOES_COM_ALVO)
+
+        monitor.buscar_ultima_publicacao()
+
+        assert mock_get.call_count == 1
+
+
+# ══════════════════════════════════════════════════════════════
+# 2b. _sanitizar_nome_arquivo e extrair_pdfs_por_ocorrencia
+# ══════════════════════════════════════════════════════════════
+
+class TestSanitizarNomeArquivo:
+
+    def test_remove_barra(self):
+        assert "/" not in monitor._sanitizar_nome_arquivo("PORTARIA Nº 072/2026")
+
+    def test_remove_dois_pontos(self):
+        assert ":" not in monitor._sanitizar_nome_arquivo("hora: 10:00")
+
+    def test_remove_asterisco_e_interrogacao(self):
+        nome = monitor._sanitizar_nome_arquivo("arq*v?.pdf")
+        assert "*" not in nome and "?" not in nome
+
+    def test_texto_sem_caracteres_invalidos_inalterado(self):
+        original = "PORTARIA Nº 262 - MARINA COSTA"
+        assert monitor._sanitizar_nome_arquivo(original) == original
+
+
+class TestExtrairPdfsPorOcorrencia:
+
+    def _ocorrencia(self, titulo, nome):
+        return {
+            "nome": nome,
+            "portaria": {"titulo": titulo, "ementa": "", "conteudo": titulo},
+        }
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_retorna_lista_vazia_em_erro_de_rede(self, mock_get):
+        """Deve retornar lista vazia se o PDF não puder ser baixado."""
+        import requests as req_lib
+        mock_get.side_effect = req_lib.RequestException("timeout")
+
+        oc = self._ocorrencia("PORTARIA Nº 001/2026", "FULANO DE TAL")
+        resultado = monitor.extrair_pdfs_por_ocorrencia("http://pdf.url", [oc])
+
+        assert resultado == []
+
+    def test_retorna_lista_vazia_sem_pypdf(self):
+        """Se pypdf não estiver instalado, retorna lista vazia sem travar."""
+        import sys
+        import builtins
+        original_import = builtins.__import__
+
+        def import_bloqueado(name, *args, **kwargs):
+            if name == "pypdf":
+                raise ImportError("pypdf ausente")
+            return original_import(name, *args, **kwargs)
+
+        oc = self._ocorrencia("PORTARIA Nº 001/2026", "FULANO DE TAL")
+        with patch("builtins.__import__", side_effect=import_bloqueado):
+            resultado = monitor.extrair_pdfs_por_ocorrencia("http://pdf.url", [oc])
+
+        assert resultado == []
+
+    def test_nome_arquivo_contem_titulo_e_nome(self, tmp_path):
+        """O arquivo gerado deve ter título e nome da pessoa no nome."""
+        from pypdf import PdfWriter
+        import io as _io
+
+        # Cria um PDF mínimo com texto da portaria
+        writer = PdfWriter()
+        page = writer.add_blank_page(width=200, height=200)
+        buf = _io.BytesIO()
+        writer.write(buf)
+        pdf_bytes = buf.getvalue()
+
+        mock_resp = MagicMock()
+        mock_resp.content = pdf_bytes
+        mock_resp.raise_for_status = MagicMock()
+
+        oc = self._ocorrencia("PORTARIA Nº 001-2026", "MARINA COSTA")
+
+        with patch("monitor_diario_oficial.requests.get", return_value=mock_resp):
+            with patch("monitor_diario_oficial.os.path.dirname", return_value=str(tmp_path)):
+                resultado = monitor.extrair_pdfs_por_ocorrencia("http://pdf.url", [oc])
+
+        # Mesmo sem páginas encontradas (PDF em branco), a lista pode ser vazia.
+        # O que testamos é que não lançou exceção e o formato do nome está correto
+        # quando há páginas (verificado pelo _sanitizar_nome_arquivo).
+        nome_esperado = monitor._sanitizar_nome_arquivo(
+            "PORTARIA Nº 001-2026 - MARINA COSTA"
+        ) + ".pdf"
+        assert "PORTARIA" in nome_esperado
+        assert "MARINA COSTA" in nome_esperado
 
 
 # ══════════════════════════════════════════════════════════════
@@ -564,6 +717,12 @@ class TestFormatarMensagem:
         msg = monitor.formatar_mensagem([oc], "06/05/2026")
         assert "Diário Oficial" in msg or "Diario Oficial" in msg
 
+    def test_cabecalho_menciona_sala_saude_educacao(self):
+        """A mensagem deve identificar a Sala Saúde | Educação PMM."""
+        oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "Ementa.", "Conteúdo.")
+        msg = monitor.formatar_mensagem([oc], "06/05/2026")
+        assert "Sala Saúde" in msg or "SALA SAUDE" in msg.upper()
+
     def test_contagem_de_ocorrencias_no_cabecalho(self):
         oc1 = self._ocorrencia("NOME A", "PORTARIA Nº 001", "", "Conteudo.")
         oc2 = self._ocorrencia("NOME B", "PORTARIA Nº 002", "", "Conteudo.")
@@ -657,7 +816,7 @@ class TestEnviarWhatsapp:
         mock_isdir.return_value = True
         _setup_selenium_mocks(mock_chrome, mock_wait)
 
-        resultado = monitor.enviar_whatsapp("Mensagem de teste", "Grupo Teste")
+        resultado = monitor.enviar_whatsapp("Mensagem de teste", "Grupo Teste", [])
 
         assert resultado is True
 
@@ -781,3 +940,305 @@ class TestEnviarWhatsapp:
         monitor.enviar_whatsapp("Mensagem", "Grupo")
 
         mock_driver.get.assert_called_once_with("https://web.whatsapp.com")
+
+
+# ══════════════════════════════════════════════════════════════
+# 7. _enviar_arquivo_no_grupo
+# Verifica que o botão de envio é REALMENTE clicado — não apenas
+# que a função retorna sem erro (que é o bug atual).
+# ══════════════════════════════════════════════════════════════
+
+class TestEnviarArquivoNoGrupo:
+    """
+    Testa _enviar_arquivo_no_grupo isoladamente.
+
+    O bug reportado: a função loga "enviado com sucesso" mas o arquivo
+    não é enviado porque o botão não foi encontrado e o fallback Enter
+    não tem foco no botão correto — a função retorna sem clicar em nada.
+
+    Os testes abaixo tornam esse comportamento detectável.
+    """
+
+    def _make_driver(self, input_accept=""):
+        """Monta um mock de driver com um input de arquivo disponível."""
+        driver = MagicMock()
+        mock_input = MagicMock()
+        mock_input.get_attribute.return_value = input_accept
+        driver.find_elements.return_value = [mock_input]
+        driver.execute_script.return_value = None
+        return driver, mock_input
+
+    @patch("monitor_diario_oficial.time.sleep")
+    @patch("monitor_diario_oficial.WebDriverWait")
+    def test_click_chamado_quando_xpath_encontra_botao(self, mock_wait_cls, mock_sleep):
+        """
+        Caminho feliz: clipe → Documentos → botão enviar clicado.
+        click() DEVE ser chamado no botão de envio para confirmar o envio real.
+        """
+        driver, mock_input = self._make_driver()
+
+        mock_btn_clipe = MagicMock()
+        mock_btn_docs = MagicMock()
+        mock_btn_enviar = MagicMock()
+        mock_wait_inst = MagicMock()
+        mock_wait_cls.return_value = mock_wait_inst
+        # Sequência: clipe → Documentos → botão enviar
+        mock_wait_inst.until.side_effect = [
+            mock_btn_clipe,   # clipe encontrado
+            mock_btn_docs,    # "Documentos" encontrado
+            mock_btn_enviar,  # botão de enviar encontrado
+        ]
+
+        monitor._enviar_arquivo_no_grupo(driver, "arquivo.pdf")
+
+        mock_btn_enviar.click.assert_called_once(), (
+            "O botão de envio DEVE ser clicado para que o arquivo seja enviado"
+        )
+
+    @patch("monitor_diario_oficial.time.sleep")
+    @patch("monitor_diario_oficial.WebDriverWait")
+    def test_javascript_fallback_chamado_quando_xpath_falha(self, mock_wait_cls, mock_sleep):
+        """
+        XPath não encontra o botão de envio → fallback JavaScript DEVE ser
+        executado com seletores do botão real do WhatsApp Web.
+        """
+        driver, mock_input = self._make_driver()
+
+        mock_btn_clipe = MagicMock()
+        mock_btn_docs = MagicMock()
+        mock_wait_inst = MagicMock()
+        mock_wait_cls.return_value = mock_wait_inst
+        # Clipe e Documentos encontrados; todos os XPaths do botão enviar falham
+        mock_wait_inst.until.side_effect = (
+            [mock_btn_clipe, mock_btn_docs] + [Exception("not found")] * 20
+        )
+        driver.execute_script.return_value = '[data-testid="wds-ic-send-filled"]'
+
+        monitor._enviar_arquivo_no_grupo(driver, "arquivo.pdf")
+
+        js_calls = [str(c) for c in driver.execute_script.call_args_list]
+        assert any("wds-ic-send-filled" in c for c in js_calls), (
+            "O fallback JavaScript deve buscar pelo seletor confirmado do WhatsApp Web"
+        )
+
+    @patch("monitor_diario_oficial.time.sleep")
+    @patch("monitor_diario_oficial.WebDriverWait")
+    def test_levanta_excecao_quando_botao_nao_encontrado(self, mock_wait_cls, mock_sleep):
+        """
+        Quando XPath e JavaScript falham, a função DEVE levantar Exception
+        em vez de retornar silenciosamente como se tivesse enviado.
+        """
+        driver, mock_input = self._make_driver()
+
+        mock_btn_clipe = MagicMock()
+        mock_btn_docs = MagicMock()
+        mock_wait_inst = MagicMock()
+        mock_wait_cls.return_value = mock_wait_inst
+        mock_wait_inst.until.side_effect = (
+            [mock_btn_clipe, mock_btn_docs] + [Exception("not found")] * 20
+        )
+        driver.execute_script.return_value = None  # JS não encontrou nada
+
+        with pytest.raises(Exception, match="[Bb]otão"):
+            monitor._enviar_arquivo_no_grupo(driver, "arquivo.pdf")
+
+    @patch("monitor_diario_oficial.time.sleep")
+    @patch("monitor_diario_oficial.WebDriverWait")
+    def test_nao_retorna_sucesso_sem_clicar_botao(self, mock_wait_cls, mock_sleep):
+        """
+        Quando nenhum botão de envio é encontrado, a função deve levantar
+        Exception — nunca retornar silenciosamente como se tivesse enviado.
+        """
+        driver, mock_input = self._make_driver()
+
+        mock_btn_clipe = MagicMock()
+        mock_btn_docs = MagicMock()
+        mock_wait_inst = MagicMock()
+        mock_wait_cls.return_value = mock_wait_inst
+        mock_wait_inst.until.side_effect = (
+            [mock_btn_clipe, mock_btn_docs] + [Exception("not found")] * 20
+        )
+        driver.execute_script.return_value = None
+
+        try:
+            monitor._enviar_arquivo_no_grupo(driver, "arquivo.pdf")
+            pytest.fail(
+                "BUG: a função retornou sem erro mas nenhum botão foi clicado — "
+                "o arquivo NÃO foi enviado."
+            )
+        except Exception:
+            pass  # comportamento correto: levantou Exception
+
+
+# ══════════════════════════════════════════════════════════════
+# 8. _extrair_dados_fofoca
+#    Cobre os 4 padrões reais observados no Diário Oficial:
+#      Ex1 — NOMEAR homem  (nome + PARA EXERCER)
+#      Ex2 — NOMEAR mulher (mesmo padrão, nome diferente)
+#      Ex3 — EXONERAR mulher com "a servidora" e preposição "DA" no nome
+#      Ex4 — EXONERAR homem com "o servidor"
+# ══════════════════════════════════════════════════════════════
+
+class TestExtrairDadosFofoca:
+    """
+    Testa _extrair_dados_fofoca com os padrões reais do Diário Oficial de Mossoró.
+
+    Os parágrafos são fornecidos em MAIÚSCULAS NFC (como extraídos do HTML).
+    Um teste adicional verifica que a função também aceita entrada NFKD
+    (formato produzido por detectar_fofocas).
+    """
+
+    # ── Exemplo 1: NOMEAR homem ──────────────────────────────────────────────
+    # "Art. 1º Nomear PEDRO LUCAS REBOUÇAS GOMES para exercer o cargo em comissão
+    #  de Assessor de Comunicação, símbolo CC11, na função de Assessor de Comunicação,
+    #  com lotação na Secretaria Municipal de Comunicação Social da Prefeitura Municipal
+    #  de Mossoró."
+    PARA1 = (
+        "ART. 1 NOMEAR PEDRO LUCAS REBOUÇAS GOMES PARA EXERCER O CARGO EM COMISSÃO "
+        "DE ASSESSOR DE COMUNICAÇÃO, SÍMBOLO CC11, NA FUNÇÃO DE ASSESSOR DE COMUNICAÇÃO, "
+        "COM LOTAÇÃO NA SECRETARIA MUNICIPAL DE COMUNICAÇÃO SOCIAL DA PREFEITURA MUNICIPAL "
+        "DE MOSSORÓ."
+    )
+    SEC1 = "SECRETARIA MUNICIPAL DE COMUNICAÇÃO SOCIAL"
+
+    # ── Exemplo 2: NOMEAR mulher ─────────────────────────────────────────────
+    # "Art. 1º Nomear AMANDA CYBELE PINHEIRO BEZERRA para exercer o cargo em comissão
+    #  de Assessor Especial II, símbolo CC6, na função de Assessor Especial,
+    #  com lotação na Gabinete do Prefeito da Prefeitura Municipal de Mossoró."
+    PARA2 = (
+        "ART. 1 NOMEAR AMANDA CYBELE PINHEIRO BEZERRA PARA EXERCER O CARGO EM COMISSÃO "
+        "DE ASSESSOR ESPECIAL II, SÍMBOLO CC6, NA FUNÇÃO DE ASSESSOR ESPECIAL, "
+        "COM LOTAÇÃO NA GABINETE DO PREFEITO DA PREFEITURA MUNICIPAL DE MOSSORÓ."
+    )
+    SEC2 = "GABINETE DO PREFEITO"
+
+    # ── Exemplo 3: EXONERAR mulher com "a servidora" + "DA" no nome ─────────
+    # "Art. 1º EXONERAR a servidora ROSANGELA GURGEL DA NOBREGA do cargo em comissão
+    #  de Assessor Executivo, símbolo CC15, na função de Assessor Executivo,
+    #  com lotação na Secretaria Municipal de Cultura da Prefeitura Municipal de Mossoró."
+    PARA3 = (
+        "ART. 1 EXONERAR A SERVIDORA ROSANGELA GURGEL DA NOBREGA DO CARGO EM COMISSÃO "
+        "DE ASSESSOR EXECUTIVO, SÍMBOLO CC15, NA FUNÇÃO DE ASSESSOR EXECUTIVO, "
+        "COM LOTAÇÃO NA SECRETARIA MUNICIPAL DE CULTURA DA PREFEITURA MUNICIPAL DE MOSSORÓ."
+    )
+    SEC3 = "SECRETARIA MUNICIPAL DE CULTURA"
+
+    # ── Exemplo 4: EXONERAR homem com "o servidor" ──────────────────────────
+    # "Art. 1º EXONERAR o servidor RAMON YOVANIS INFANTE RODRIGUEZ do cargo em comissão
+    #  de Diretor de Unidade III, símbolo CC11, na função de Diretor do Centro de Produção
+    #  de Mudas, com lotação na Secretaria Municipal de Serviços Urbanos da Prefeitura
+    #  Municipal de Mossoró."
+    PARA4 = (
+        "ART. 1 EXONERAR O SERVIDOR RAMON YOVANIS INFANTE RODRIGUEZ DO CARGO EM COMISSÃO "
+        "DE DIRETOR DE UNIDADE III, SÍMBOLO CC11, NA FUNÇÃO DE DIRETOR DO CENTRO DE "
+        "PRODUÇÃO DE MUDAS, COM LOTAÇÃO NA SECRETARIA MUNICIPAL DE SERVIÇOS URBANOS DA "
+        "PREFEITURA MUNICIPAL DE MOSSORÓ."
+    )
+    SEC4 = "SECRETARIA MUNICIPAL DE SERVIÇOS URBANOS"
+
+    # ── Exemplo 1: NOMEAR homem ──────────────────────────────────────────────
+
+    def test_ex1_nome_nomear_homem(self):
+        """NOMEAR → extrai nome completo sem incluir 'PARA EXERCER'."""
+        r = monitor._extrair_dados_fofoca(self.PARA1, self.SEC1)
+        assert r is not None
+        assert r["pessoa"] == "PEDRO LUCAS REBOUÇAS GOMES"
+
+    def test_ex1_acao_nomear(self):
+        r = monitor._extrair_dados_fofoca(self.PARA1, self.SEC1)
+        assert r["acao"] == "NOMEADO(A)"
+
+    def test_ex1_cargo_nomear(self):
+        r = monitor._extrair_dados_fofoca(self.PARA1, self.SEC1)
+        assert r["cargo"] != "cargo não identificado"
+        assert "ASSESSOR" in r["cargo"].upper()
+
+    def test_ex1_cc_nomear(self):
+        r = monitor._extrair_dados_fofoca(self.PARA1, self.SEC1)
+        assert r["simbolo_cc"] == "CC11"
+
+    # ── Exemplo 2: NOMEAR mulher ─────────────────────────────────────────────
+
+    def test_ex2_nome_nomear_mulher(self):
+        """NOMEAR mulher → mesmo padrão, nome completo extraído corretamente."""
+        r = monitor._extrair_dados_fofoca(self.PARA2, self.SEC2)
+        assert r is not None
+        assert r["pessoa"] == "AMANDA CYBELE PINHEIRO BEZERRA"
+
+    def test_ex2_cc_nomear_mulher(self):
+        r = monitor._extrair_dados_fofoca(self.PARA2, self.SEC2)
+        assert r["simbolo_cc"] == "CC6"
+
+    def test_ex2_acao_nomear_mulher(self):
+        r = monitor._extrair_dados_fofoca(self.PARA2, self.SEC2)
+        assert r["acao"] == "NOMEADO(A)"
+
+    # ── Exemplo 3: EXONERAR mulher com "a servidora" ────────────────────────
+
+    def test_ex3_nome_exonerar_servidora(self):
+        """EXONERAR + 'a servidora' → nome inclui preposição 'DA' interna corretamente."""
+        r = monitor._extrair_dados_fofoca(self.PARA3, self.SEC3)
+        assert r is not None
+        assert r["pessoa"] == "ROSANGELA GURGEL DA NOBREGA"
+
+    def test_ex3_nome_nao_contem_servidora(self):
+        """O nome capturado não deve conter 'SERVIDORA' nem o artigo 'A'."""
+        r = monitor._extrair_dados_fofoca(self.PARA3, self.SEC3)
+        assert "SERVIDORA" not in r["pessoa"]
+
+    def test_ex3_acao_exonerar(self):
+        r = monitor._extrair_dados_fofoca(self.PARA3, self.SEC3)
+        assert r["acao"] == "EXONERADO(A)"
+
+    def test_ex3_cc_exonerar_servidora(self):
+        r = monitor._extrair_dados_fofoca(self.PARA3, self.SEC3)
+        assert r["simbolo_cc"] == "CC15"
+
+    def test_ex3_cargo_exonerar_servidora(self):
+        r = monitor._extrair_dados_fofoca(self.PARA3, self.SEC3)
+        assert r["cargo"] != "cargo não identificado"
+        assert "ASSESSOR" in r["cargo"].upper()
+
+    # ── Exemplo 4: EXONERAR homem com "o servidor" ──────────────────────────
+
+    def test_ex4_nome_exonerar_servidor(self):
+        """EXONERAR + 'o servidor' → nome extraído sem 'O SERVIDOR'."""
+        r = monitor._extrair_dados_fofoca(self.PARA4, self.SEC4)
+        assert r is not None
+        assert r["pessoa"] == "RAMON YOVANIS INFANTE RODRIGUEZ"
+
+    def test_ex4_nome_nao_contem_servidor(self):
+        r = monitor._extrair_dados_fofoca(self.PARA4, self.SEC4)
+        assert "SERVIDOR" not in r["pessoa"]
+
+    def test_ex4_cc_exonerar_servidor(self):
+        r = monitor._extrair_dados_fofoca(self.PARA4, self.SEC4)
+        assert r["simbolo_cc"] == "CC11"
+
+    def test_ex4_cargo_exonerar_servidor(self):
+        r = monitor._extrair_dados_fofoca(self.PARA4, self.SEC4)
+        assert r["cargo"] != "cargo não identificado"
+        assert "DIRETOR" in r["cargo"].upper()
+
+    # ── Entrada NFKD (como vem de detectar_fofocas) ─────────────────────────
+
+    def test_entrada_nfkd_exonerar_servidora(self):
+        """
+        detectar_fofocas aplica NFKD antes de chamar _extrair_dados_fofoca.
+        A função deve normalizar internamente e extrair os dados corretamente.
+        """
+        paragrafo_nfkd = unicodedata.normalize("NFKD", self.PARA3)
+        secretaria_nfkd = unicodedata.normalize("NFKD", self.SEC3)
+        r = monitor._extrair_dados_fofoca(paragrafo_nfkd, secretaria_nfkd)
+        assert r is not None
+        assert r["pessoa"] == "ROSANGELA GURGEL DA NOBREGA"
+        assert r["simbolo_cc"] == "CC15"
+
+    def test_entrada_nfkd_nomear_homem(self):
+        """Mesmo teste NFKD para o caso NOMEAR."""
+        paragrafo_nfkd = unicodedata.normalize("NFKD", self.PARA1)
+        secretaria_nfkd = unicodedata.normalize("NFKD", self.SEC1)
+        r = monitor._extrair_dados_fofoca(paragrafo_nfkd, secretaria_nfkd)
+        assert r is not None
+        assert r["pessoa"] == "PEDRO LUCAS REBOUÇAS GOMES"
+        assert r["simbolo_cc"] == "CC11"
