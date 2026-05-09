@@ -1056,39 +1056,47 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
     if btn_clipe is None:
         raise Exception("Botão de anexar (clipe) não encontrado.")
 
-    btn_clipe.click()
-    time.sleep(1)
-
-    # Clica em "Documentos" no submenu de anexos.
-    # No WhatsApp Web atual o clipe abre um menu com opções (Fotos, Documentos, etc.).
-    # É obrigatório clicar em "Documentos" para que o input correto fique ativo —
-    # caso contrário o arquivo é enviado para o input de imagens e rejeitado.
+    # Clica em "Documentos" no submenu de anexos com retry.
+    # O WhatsApp Web pode demorar para renderizar o submenu; se não encontrar,
+    # fecha com Escape, aguarda e tenta novamente.
     xpaths_documentos = [
         '//span[contains(text(),"Documento")]',
         '//span[contains(text(),"Document")]',
         '//div[contains(@aria-label,"ocumento")]',
         '//li[.//span[contains(text(),"ocumento")]]',
-        # Fallback: label cujo input aceita qualquer tipo (não só imagens)
         '//label[.//input[@type="file"][not(contains(@accept,"image"))]]',
     ]
     clicou_documentos = False
-    for xpath in xpaths_documentos:
-        try:
-            btn_docs = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, xpath))
-            )
-            btn_docs.click()
-            log.info(f"Opção 'Documentos' clicada: {xpath}")
-            time.sleep(1)
-            clicou_documentos = True
+    _MAX_TENTATIVAS_DOCS = 3
+    for tentativa in range(1, _MAX_TENTATIVAS_DOCS + 1):
+        btn_clipe.click()
+        time.sleep(2)  # Aguarda o submenu renderizar
+        for xpath in xpaths_documentos:
+            try:
+                btn_docs = WebDriverWait(driver, 4).until(
+                    EC.element_to_be_clickable((By.XPATH, xpath))
+                )
+                btn_docs.click()
+                log.info(f"Opção 'Documentos' clicada (tentativa {tentativa}): {xpath}")
+                time.sleep(1)
+                clicou_documentos = True
+                break
+            except Exception:
+                pass
+        if clicou_documentos:
             break
+        # Fecha o submenu antes de tentar novamente
+        log.warning(f"Opção 'Documentos' não encontrada (tentativa {tentativa}/{_MAX_TENTATIVAS_DOCS}) — fechando submenu e tentando novamente.")
+        try:
+            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
         except Exception:
             pass
+        time.sleep(2)
 
     if not clicou_documentos:
         log.warning(
-            "Opção 'Documentos' não encontrada no submenu — tentando enviar "
-            "diretamente ao input de arquivo (pode rejeitar PDF)."
+            "Opção 'Documentos' não encontrada após todas as tentativas — "
+            "tentando enviar diretamente ao input de arquivo (pode rejeitar PDF)."
         )
 
     # Localiza o input[type="file"] para documentos.
