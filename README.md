@@ -122,7 +122,7 @@ O programa fica ativo em segundo plano, executa no horário configurado e aguard
 
 **1ª mensagem — Resumo das ocorrências:**
 ```
-📢 MONITORAMENTO — Diário Oficial de Mossoró
+📢 MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ
 
 👥 Minha Equipe
 
@@ -156,7 +156,7 @@ Ementa: Nomeia servidor...
 ### Quando não há ocorrências
 
 ```
-📢 MONITORAMENTO — Diário Oficial de Mossoró
+📢 MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ
 👥 Minha Equipe
 📅 Edição: 09/05/2026
 
