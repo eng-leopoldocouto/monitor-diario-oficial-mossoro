@@ -817,7 +817,6 @@ def formatar_fofocas(fofocas: list[dict]) -> str:
     """
     linhas = [
         "",
-        "━━━━━━━━━━━━━━━━━━",
         "🗣️ *FOFOCA DA SECRETARIA*",
     ]
 
@@ -850,14 +849,14 @@ def formatar_fofocas(fofocas: list[dict]) -> str:
             if acao == "PROMOVIDO(A)":
                 texto = (
                     f"🔝 *{pessoa}* foi *PROMOVIDO(A)*!\n"
-                    f"   Antes: _{c_ant}{cc_ant_str}_ na _{s_ant}_\n"
-                    f"   Agora: _{c_nov}{cc_nov_str}_ na _{s_nov}_"
+                    f"   De: _{c_ant}{cc_ant_str}_ na _{s_ant}_\n"
+                    f"   Para: _{c_nov}{cc_nov_str}_ na _{s_nov}_"
                 )
             else:
                 texto = (
                     f"🔄 *{pessoa}* foi *REMANEJADO(A)*.\n"
-                    f"   Antes: _{c_ant}{cc_ant_str}_ na _{s_ant}_\n"
-                    f"   Agora: _{c_nov}{cc_nov_str}_ na _{s_nov}_"
+                    f"   De: _{c_ant}{cc_ant_str}_ na _{s_ant}_\n"
+                    f"   Para: _{c_nov}{cc_nov_str}_ na _{s_nov}_"
                 )
 
         elif "NOMEADO" in acao:
@@ -978,9 +977,6 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
         return []
 
     reader = PdfReader(io.BytesIO(resp.content))
-    todos_titulos_norm = [
-        _normalizar(oc["portaria"]["titulo"]) for oc in ocorrencias
-    ]
     pasta = os.path.dirname(os.path.abspath(__file__))
     caminhos_gerados = []
 
@@ -1008,9 +1004,21 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
         m.start() for m in _portaria_title_re.finditer(combined)
     ]
 
+    # Agrupa ocorrências por portaria para evitar PDFs duplicados quando
+    # múltiplos nomes monitorados aparecem na mesma portaria.
+    # Mantém ordem de inserção (Python 3.7+) para preservar sequência original.
+    portaria_nomes: dict[str, list[str]] = {}
+    portaria_obj:   dict[str, dict]      = {}
     for oc in ocorrencias:
         titulo = oc["portaria"]["titulo"]
-        nome   = oc["nome"]
+        if titulo not in portaria_nomes:
+            portaria_nomes[titulo] = []
+            portaria_obj[titulo]   = oc["portaria"]
+        if oc["nome"] not in portaria_nomes[titulo]:
+            portaria_nomes[titulo].append(oc["nome"])
+
+    for titulo, nomes in portaria_nomes.items():
+        portaria    = portaria_obj[titulo]
         titulo_norm = _normalizar(titulo)
 
         writer = PdfWriter()
@@ -1047,16 +1055,20 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
             continue
 
         paginas_incluidas = sorted(set(paginas_incluidas))
-        log.info(f"Páginas {paginas_incluidas} extraídas para '{nome}'.")
+        nomes_log = ", ".join(nomes)
+        log.info(f"Páginas {paginas_incluidas} extraídas para [{nomes_log}].")
 
         # Quando o título termina em vírgula e a ementa é a continuação da data
         # ("DE 08 DE MAIO DE 2026"), o DOM separou em duas linhas — junta para o nome.
-        ementa = oc["portaria"].get("ementa", "")
+        ementa = portaria.get("ementa", "")
         if titulo.rstrip().endswith(",") and re.match(r"DE\s+\d", ementa.strip(), re.IGNORECASE):
             titulo_arquivo = f"{titulo.rstrip()} {ementa.strip()}"
         else:
             titulo_arquivo = titulo
-        nome_arquivo = _sanitizar_nome_arquivo(f"{titulo_arquivo} - {nome}") + ".pdf"
+
+        # Nome do arquivo inclui todos os nomes encontrados na portaria
+        nomes_arquivo = " + ".join(nomes)
+        nome_arquivo = _sanitizar_nome_arquivo(f"{titulo_arquivo} - {nomes_arquivo}") + ".pdf"
         caminho_saida = os.path.join(pasta, nome_arquivo)
         with open(caminho_saida, "wb") as f:
             writer.write(f)
