@@ -96,31 +96,31 @@ if not NOMES_MONITORADOS:
 
 # ── Secretarias monitoradas (Fofoca da Secretaria) ───────────────────────────
 # Pode ser sobrescrita via SECRETARIAS_MOSSORO no .env.
-# O padrão cobre todas as secretarias do município de Mossoró.
+# Para ativar outras secretarias, remova o '#' da linha correspondente.
 _SECRETARIAS_PADRAO = [
     "SECRETARIA MUNICIPAL DE INFRAESTRUTURA",
-    "SECRETARIA MUNICIPAL DE SAÚDE",
-    '''"SECRETARIA MUNICIPAL DE EDUCAÇÃO",
-    "SECRETARIA MUNICIPAL DE FINANÇAS",
-    "SECRETARIA MUNICIPAL DE ADMINISTRAÇÃO",
-    "SECRETARIA MUNICIPAL DE ASSISTÊNCIA SOCIAL",
-    "SECRETARIA MUNICIPAL DE PLANEJAMENTO",
-    "SECRETARIA MUNICIPAL DE MEIO AMBIENTE",
-    "SECRETARIA MUNICIPAL DE AGRICULTURA",
-    "SECRETARIA MUNICIPAL DE HABITAÇÃO",
-    "SECRETARIA MUNICIPAL DE TURISMO",
-    "SECRETARIA MUNICIPAL DE CULTURA",
-    "SECRETARIA MUNICIPAL DE ESPORTES",
-    "SECRETARIA MUNICIPAL DE SEGURANÇA",
-    "SECRETARIA MUNICIPAL DE TRANSPORTES",
-    "SECRETARIA MUNICIPAL DE COMUNICAÇÃO",
-    "SECRETARIA MUNICIPAL DE DESENVOLVIMENTO ECONÔMICO",
-    "SECRETARIA MUNICIPAL DE OBRAS",
-    "SECRETARIA MUNICIPAL DE SERVIÇOS URBANOS",
-    "SECRETARIA MUNICIPAL DE DEFESA CIVIL",
-    "GABINETE DO PREFEITO",
-    "PROCURADORIA GERAL DO MUNICÍPIO",
-    "CONTROLADORIA GERAL DO MUNICÍPIO",'''
+    # "SECRETARIA MUNICIPAL DE SAÚDE",
+    # "SECRETARIA MUNICIPAL DE EDUCAÇÃO",
+    # "SECRETARIA MUNICIPAL DE FINANÇAS",
+    # "SECRETARIA MUNICIPAL DE ADMINISTRAÇÃO",
+    # "SECRETARIA MUNICIPAL DE ASSISTÊNCIA SOCIAL",
+    # "SECRETARIA MUNICIPAL DE PLANEJAMENTO",
+    # "SECRETARIA MUNICIPAL DE MEIO AMBIENTE",
+    # "SECRETARIA MUNICIPAL DE AGRICULTURA",
+    # "SECRETARIA MUNICIPAL DE HABITAÇÃO",
+    # "SECRETARIA MUNICIPAL DE TURISMO",
+    # "SECRETARIA MUNICIPAL DE CULTURA",
+    # "SECRETARIA MUNICIPAL DE ESPORTES",
+    # "SECRETARIA MUNICIPAL DE SEGURANÇA",
+    # "SECRETARIA MUNICIPAL DE TRANSPORTES",
+    # "SECRETARIA MUNICIPAL DE COMUNICAÇÃO",
+    # "SECRETARIA MUNICIPAL DE DESENVOLVIMENTO ECONÔMICO",
+    # "SECRETARIA MUNICIPAL DE OBRAS",
+    # "SECRETARIA MUNICIPAL DE SERVIÇOS URBANOS",
+    # "SECRETARIA MUNICIPAL DE DEFESA CIVIL",
+    # "GABINETE DO PREFEITO",
+    # "PROCURADORIA GERAL DO MUNICÍPIO",
+    # "CONTROLADORIA GERAL DO MUNICÍPIO",
 ]
 SECRETARIAS_MOSSORO: list[str] = _ler_lista_env("SECRETARIAS_MOSSORO", _SECRETARIAS_PADRAO)
 
@@ -886,9 +886,9 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str) -> str:
     A seção de fofocas é enviada separadamente após os PDFs.
     """
     linhas = [
-        f"📢 *MONITORAMENTO — Diário Oficial de Mossoró*\n",
+        f"📢 *MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ*\n",
         f"👥 *{NOME_SALA}*\n",
-        f"📅 Edição: {data_str}",
+        f"📅 EDIÇÃO: {data_str}",
         f"🔍 {len(ocorrencias)} ocorrência(s) encontrada(s)\n",
     ]
 
@@ -1536,7 +1536,7 @@ def main():
     if not ocorrencias:
         log.info("Nenhum nome monitorado encontrado — enviando aviso ao WhatsApp.")
         mensagem_vazia = (
-            f"📢 *MONITORAMENTO — Diário Oficial de Mossoró*\n"
+            f"📢 *MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ*\n"
             f"👥 *{NOME_SALA}*\n"
             f"📅 Edição: {publicacao['data']}\n\n"
             f"❌ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."

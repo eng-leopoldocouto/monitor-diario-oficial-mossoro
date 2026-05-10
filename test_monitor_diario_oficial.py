@@ -749,7 +749,7 @@ class TestFormatarMensagem:
     def test_cabecalho_menciona_diario_oficial(self):
         oc = self._ocorrencia("FULANO", "PORTARIA Nº 001", "Ementa.", "Conteúdo.")
         msg = monitor.formatar_mensagem([oc], "06/05/2026")
-        assert "Diário Oficial" in msg or "Diario Oficial" in msg
+        assert "DIÁRIO OFICIAL" in msg or "DIARIO OFICIAL" in msg
 
     def test_cabecalho_menciona_sala_saude_educacao(self):
         """A mensagem deve identificar a Sala Saúde / SEINFRA no cabeçalho."""
