@@ -1643,13 +1643,14 @@ def _agendar_execucao(horario: str) -> None:
 
 if __name__ == "__main__":
     # ── Modo agendado (Docker / execução contínua) ───────────────────────────
-    # Acionado por: python monitor_diario_oficial.py --agendar
-    # Ou automaticamente quando HORARIO_EXECUCAO estiver definido no ambiente.
-    horario_env = os.environ.get("HORARIO_EXECUCAO", "").strip()
-    if "--agendar" in sys.argv or horario_env:
-        horario = horario_env or "07:30"
+    # Acionado APENAS por: python monitor_diario_oficial.py --agendar
+    # HORARIO_EXECUCAO define o horário, mas NÃO ativa o modo sozinho.
+    # Agendamento externo (Claude Routines, Task Scheduler, cron):
+    #   → execute sem --agendar; o script roda uma vez e encerra.
+    if "--agendar" in sys.argv:
+        horario = os.environ.get("HORARIO_EXECUCAO", "05:00").strip()
         _agendar_execucao(horario)
     else:
-        # ── Execução pontual (padrão local) ─────────────────────────────────
-        # Roda uma única vez e encerra — útil para teste manual ou cron externo.
+        # ── Execução pontual (padrão) ────────────────────────────────────────
+        # Roda uma única vez e encerra — modo correto para agendamento externo.
         main()
