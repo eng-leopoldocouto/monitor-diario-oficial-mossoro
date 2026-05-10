@@ -972,6 +972,30 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
     pasta = os.path.dirname(os.path.abspath(__file__))
     caminhos_gerados = []
 
+    # Monta texto combinado de todas as páginas para localizar spans de portarias.
+    # Cada página ocupa o intervalo [page_offsets[i], page_offsets[i+1]) na string.
+    # Assim podemos mapear qualquer posição de caractere → número da página.
+    page_texts_norm: list[str] = [
+        _normalizar(p.extract_text() or "") for p in reader.pages
+    ]
+    page_offsets: list[int] = []
+    _pos = 0
+    for _t in page_texts_norm:
+        page_offsets.append(_pos)
+        _pos += len(_t) + 1          # +1 pelo "\n" separador
+    page_offsets.append(_pos)        # sentinela: posição após o último char
+    combined = "\n".join(page_texts_norm)
+
+    # Detecta posições de todos os CABEÇALHOS formais de portaria no texto do PDF
+    # (não apenas os monitorados) para usar como fronteiras precisas.
+    # Cabeçalhos formais têm vírgula após o número: "PORTARIA Nº 37,"
+    # Referências de corpo NÃO têm: "...nomeado através da Portaria nº 33 de..."
+    # Após _normalizar, "Nº" → "NO"; aceitamos variantes Oº° por segurança.
+    _portaria_title_re = re.compile(r'PORTARIA\s+N[Oº°]\s+\d+\s*,')
+    all_portaria_positions: list[int] = [
+        m.start() for m in _portaria_title_re.finditer(combined)
+    ]
+
     for oc in ocorrencias:
         titulo = oc["portaria"]["titulo"]
         nome   = oc["nome"]
@@ -980,25 +1004,31 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
         writer = PdfWriter()
         paginas_incluidas: list[int] = []
 
-        # Localiza a página inicial onde o título da portaria aparece
-        pagina_inicio: int | None = None
-        for num, page in enumerate(reader.pages):
-            texto_pag = _normalizar(page.extract_text() or "")
-            if titulo_norm in texto_pag:
-                pagina_inicio = num
-                break
+        # Localiza o início do texto desta portaria no combined.
+        start_pos = combined.find(titulo_norm)
+        if start_pos == -1:
+            log.warning(f"Título '{titulo}' não localizado no PDF — ocorrência pulada.")
+            continue
 
-        if pagina_inicio is not None:
-            # A partir da página inicial, avança até encontrar outro título ou EOF
-            outros_titulos = [t for t in todos_titulos_norm if t != titulo_norm]
-            for num in range(pagina_inicio, len(reader.pages)):
-                page = reader.pages[num]
-                texto_pag = _normalizar(page.extract_text() or "")
-                # Para quando uma página posterior contém outro título de portaria
-                if num > pagina_inicio and any(t in texto_pag for t in outros_titulos):
-                    break
-                writer.add_page(page)
-                paginas_incluidas.append(num + 1)
+        # Determina onde a portaria termina: próximo título de portaria (qualquer
+        # uma, não só as monitoradas) que apareça APÓS o início desta portaria.
+        # Isso evita incluir páginas de portarias não monitoradas ao fim do PDF.
+        search_from = start_pos + len(titulo_norm)
+        end_pos = len(combined)
+        for pos in all_portaria_positions:
+            if pos >= search_from and pos < end_pos:
+                end_pos = pos
+                break  # lista já está ordenada por posição
+
+        # Inclui todas as páginas cujo intervalo de texto se sobrepõe ao span
+        # [start_pos, end_pos) da portaria — captura corretamente portarias que
+        # ocupam 2 ou mais páginas, mesmo quando uma página tem início de outra.
+        for page_idx in range(len(reader.pages)):
+            pg_start = page_offsets[page_idx]
+            pg_end   = page_offsets[page_idx + 1]
+            if pg_start < end_pos and pg_end > start_pos:
+                writer.add_page(reader.pages[page_idx])
+                paginas_incluidas.append(page_idx + 1)
 
         if not paginas_incluidas:
             log.warning(f"Nenhuma página encontrada para '{titulo}' — ocorrência pulada.")
