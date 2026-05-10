@@ -19,3 +19,6 @@ webdriver-manager>=4.0.0
 
 # Manipulação e extração de texto de PDFs
 pypdf>=4.0.0
+
+# Carregamento automático de variáveis de ambiente do arquivo .env
+python-dotenv>=1.0.0
