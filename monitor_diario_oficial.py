@@ -55,19 +55,19 @@ except ImportError:
 # ─────────────────────────────────────────────
 # CONFIGURAÇÕES DO USUÁRIO
 # ─────────────────────────────────────────────
-# Cada valor pode ser sobrescrito por variável de ambiente, permitindo uso
-# sem editar código — ideal para Docker / Docker Compose (.env file).
+# Todos os valores sensíveis devem ser definidos no arquivo .env.
+# Nenhum dado real (nomes, grupos, senhas) deve aparecer neste código.
 #
 # Variáveis de ambiente reconhecidas:
-#   NOMES_MONITORADOS   — nomes separados por vírgula (MAIÚSCULAS)
-#   WHATSAPP_GRUPO      — nome exato do grupo no WhatsApp
-#   TIMEOUT_QR_CODE     — segundos para escanear o QR code (padrão: 120)
-#   SELENIUM_URL        — URL do WebDriver remoto (ex.: http://selenium:4444/wd/hub)
-#                         Se vazio, usa ChromeDriver local (modo Windows/instalação direta)
-#   WHATSAPP_PROFILE_DIR— caminho do perfil Chrome para sessão WhatsApp
-#   LOG_DIR             — pasta de logs (padrão: mesma pasta do script)
-#   HORARIO_EXECUCAO    — horário de execução diária HH:MM (ex.: 07:30)
-#                         Necessário apenas quando iniciado com --agendar
+#   NOMES_MONITORADOS    — nomes separados por vírgula (MAIÚSCULAS)          [obrigatório]
+#   WHATSAPP_GRUPO       — nome exato do grupo no WhatsApp                   [obrigatório]
+#   NOME_SALA            — identificação da sala exibida nas mensagens        [obrigatório]
+#   SECRETARIAS_MOSSORO  — secretarias monitoradas, separadas por vírgula    [opcional]
+#   TIMEOUT_QR_CODE      — segundos para escanear o QR code (padrão: 120)   [opcional]
+#   SELENIUM_URL         — URL do WebDriver remoto (Docker)                  [opcional]
+#   WHATSAPP_PROFILE_DIR — caminho do perfil Chrome para sessão WhatsApp     [opcional]
+#   LOG_DIR              — pasta de logs (padrão: mesma pasta do script)     [opcional]
+#   HORARIO_EXECUCAO     — horário HH:MM para --agendar (padrão: 05:00)     [opcional]
 # ─────────────────────────────────────────────
 
 def _ler_lista_env(chave: str, padrao: list[str]) -> list[str]:
@@ -78,21 +78,28 @@ def _ler_lista_env(chave: str, padrao: list[str]) -> list[str]:
     return padrao
 
 
-# Nomes monitorados pela Sala Saúde | Educação PMM
-# A lista ativa é lida da variável NOMES_MONITORADOS no .env.
-# Este fallback é usado somente se a variável não estiver definida.
-_NOMES_SALA_SAUDE_EDUCACAO = [
-    "JOSÉ LEOPOLDO DANTAS COUTO",
-    "JOSE LEOPOLDO DANTAS COUTO",
-    "CARLA VANNESSA DA ROCHA",
-    "MARIA LUCINEIDE VIDAL RODRIGUES",
-    "DEIVISON TAEMY DIAS DA SILVA",
-    "ALAERDSON NASCIMENTO DE LIMA",
-]
-NOMES_MONITORADOS: list[str] = _ler_lista_env("NOMES_MONITORADOS", _NOMES_SALA_SAUDE_EDUCACAO)
+def _ler_env_obrigatorio(chave: str) -> str:
+    """Lê variável de ambiente obrigatória; encerra com erro claro se ausente."""
+    valor = os.environ.get(chave, "").strip()
+    if not valor:
+        print(
+            f"\n[ERRO] Variável de ambiente obrigatória não definida: {chave}\n"
+            f"       Defina-a no arquivo .env antes de executar o script.\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return valor
 
-# Secretarias municipais de Mossoró monitoradas para "Fofoca da Secretaria"
-# Pode ser sobrescrita via variável de ambiente SECRETARIAS_MOSSORO (separadas por vírgula)
+
+# ── Nomes monitorados ────────────────────────────────────────────────────────
+# Obrigatório via .env. Nenhum nome real fica hardcoded no código.
+NOMES_MONITORADOS: list[str] = _ler_lista_env("NOMES_MONITORADOS", [])
+if not NOMES_MONITORADOS:
+    _ler_env_obrigatorio("NOMES_MONITORADOS")   # dispara mensagem de erro
+
+# ── Secretarias monitoradas (Fofoca da Secretaria) ───────────────────────────
+# Pode ser sobrescrita via SECRETARIAS_MOSSORO no .env.
+# O padrão cobre todas as secretarias do município de Mossoró.
 _SECRETARIAS_PADRAO = [
     "SECRETARIA MUNICIPAL DE INFRAESTRUTURA",
     "SECRETARIA MUNICIPAL DE SAÚDE",
@@ -120,15 +127,15 @@ _SECRETARIAS_PADRAO = [
 ]
 SECRETARIAS_MOSSORO: list[str] = _ler_lista_env("SECRETARIAS_MOSSORO", _SECRETARIAS_PADRAO)
 
-# Nome exato do grupo do WhatsApp (TODO: edite aqui ou defina WHATSAPP_GRUPO no .env)
-WHATSAPP_GRUPO: str = os.environ.get(
-    "WHATSAPP_GRUPO", "Saúde | Educação PMM 💉🎓 - TESTES"
-)
+# ── Grupo e identificação da sala ────────────────────────────────────────────
+# Obrigatórios via .env — não há padrão hardcoded para evitar envio acidental.
+WHATSAPP_GRUPO: str = _ler_env_obrigatorio("WHATSAPP_GRUPO")
+NOME_SALA: str       = _ler_env_obrigatorio("NOME_SALA")
 
-# Tempo máximo (segundos) para escanear o QR code na primeira execução
+# ── Parâmetros operacionais ──────────────────────────────────────────────────
 TIMEOUT_QR_CODE: int = int(os.environ.get("TIMEOUT_QR_CODE", "120"))
 
-# URL base do Diário Oficial de Mossoró
+# URL base do Diário Oficial de Mossoró (pública — não é dado sensível)
 BASE_URL = "https://dom.mossoro.rn.gov.br"
 
 # ── Modo de operação ────────────────────────────────────────────────────────
@@ -885,7 +892,7 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str) -> str:
     """
     linhas = [
         f"📢 *MONITORAMENTO — Diário Oficial de Mossoró*\n",
-        f"👥 *Sala: SAÚDE | EDUCAÇÃO SEINFRA 💉🎓*\n",
+        f"👥 *{NOME_SALA}*\n",
         f"📅 Edição: {data_str}",
         f"🔍 {len(ocorrencias)} ocorrência(s) encontrada(s)\n",
     ]
@@ -1550,7 +1557,7 @@ def main():
         log.info("Nenhum nome monitorado encontrado — enviando aviso ao WhatsApp.")
         mensagem_vazia = (
             f"📢 *MONITORAMENTO — Diário Oficial de Mossoró*\n"
-            f"👥 *Sala: SAÚDE | EDUCAÇÃO SEINFRA 💉🎓*\n"
+            f"👥 *{NOME_SALA}*\n"
             f"📅 Edição: {publicacao['data']}\n\n"
             f"❌ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."
         )
