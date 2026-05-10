@@ -202,6 +202,23 @@ Pastas criadas automaticamente durante o uso:
 
 ---
 
+## Bibliotecas utilizadas
+
+Todas as dependências são instaladas automaticamente pelo `pip install -r requirements.txt`.
+
+| Biblioteca | Versão mínima | Para que serve |
+|---|---|---|
+| [requests](https://docs.python-requests.org/) | 2.31.0 | Faz as requisições HTTP ao site do Diário Oficial para baixar as páginas e o PDF |
+| [beautifulsoup4](https://www.crummy.com/software/BeautifulSoup/) | 4.12.0 | Analisa o HTML das páginas do DOM para extrair links, títulos e conteúdo dos atos |
+| [selenium](https://www.selenium.dev/) | 4.18.0 | Controla o Chrome automaticamente para abrir o WhatsApp Web e enviar mensagens e arquivos |
+| [webdriver-manager](https://github.com/SergeyPirogov/webdriver_manager) | 4.0.0 | Baixa e gerencia automaticamente a versão correta do ChromeDriver (sem instalação manual) |
+| [pypdf](https://pypdf.readthedocs.io/) | 4.0.0 | Lê e recorta o PDF do Diário Oficial, extraindo apenas as páginas de cada portaria |
+| [python-dotenv](https://github.com/theskumar/python-dotenv) | 1.0.0 | Carrega as configurações do arquivo `.env` para as variáveis de ambiente do programa |
+
+> As bibliotecas `io`, `os`, `re`, `sys`, `time`, `logging`, `platform` e `unicodedata` são nativas do Python — não precisam ser instaladas.
+
+---
+
 ## Rodando os testes
 
 O projeto possui 115 testes automatizados. Para executá-los:
@@ -282,6 +299,26 @@ Abra o PR descrevendo **o que foi mudado** e **por quê**. Se a mudança corrige
 - Melhoria nos seletores do WhatsApp Web (o WhatsApp atualiza a interface periodicamente)
 - Melhoria na extração de cargos e símbolos CC da "Fofoca da Secretaria"
 - Testes de integração com o site real do DOM
+
+---
+
+## Roadmap
+
+### 🐳 Docker e Docker Compose (planejado)
+
+Em uma versão futura, o projeto terá suporte a **Docker** e **Docker Compose**, permitindo executar o monitor em qualquer sistema operacional — Windows, macOS e Linux — sem precisar instalar Python, Chrome ou ChromeDriver manualmente.
+
+Com Docker, o fluxo de instalação será simplificado para:
+
+```bash
+# Copiar e preencher o .env
+cp .env.example .env
+
+# Subir o container
+docker compose up -d
+```
+
+Toda a configuração de ambiente (Python, Chrome, ChromeDriver, dependências) ficará encapsulada no container, tornando a implantação mais simples, portátil e reproduzível em qualquer máquina.
 
 ---
 
