@@ -44,6 +44,14 @@ try:
 except ImportError:
     ChromeDriverManager = None  # type: ignore
 
+# Carrega variáveis do arquivo .env (se existir) antes de ler os os.environ.get().
+# python-dotenv não sobrescreve variáveis já definidas no ambiente do SO.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(encoding="utf-8", override=False)
+except ImportError:
+    pass  # sem python-dotenv, usa apenas variáveis de ambiente do SO
+
 # ─────────────────────────────────────────────
 # CONFIGURAÇÕES DO USUÁRIO
 # ─────────────────────────────────────────────
@@ -71,7 +79,8 @@ def _ler_lista_env(chave: str, padrao: list[str]) -> list[str]:
 
 
 # Nomes monitorados pela Sala Saúde | Educação PMM
-# (edite abaixo ou defina NOMES_MONITORADOS no .env)
+# A lista ativa é lida da variável NOMES_MONITORADOS no .env.
+# Este fallback é usado somente se a variável não estiver definida.
 _NOMES_SALA_SAUDE_EDUCACAO = [
     "JOSÉ LEOPOLDO DANTAS COUTO",
     "JOSE LEOPOLDO DANTAS COUTO",
@@ -79,8 +88,6 @@ _NOMES_SALA_SAUDE_EDUCACAO = [
     "MARIA LUCINEIDE VIDAL RODRIGUES",
     "DEIVISON TAEMY DIAS DA SILVA",
     "ALAERDSON NASCIMENTO DE LIMA",
-    "LUCAS PAULO RIBEIRO DE OLIVEIRA",  # TODO: remover após validação
-
 ]
 NOMES_MONITORADOS: list[str] = _ler_lista_env("NOMES_MONITORADOS", _NOMES_SALA_SAUDE_EDUCACAO)
 
@@ -871,9 +878,10 @@ def formatar_fofocas(fofocas: list[dict]) -> str:
     return "\n".join(linhas)
 
 
-def formatar_mensagem(ocorrencias: list[dict], data_str: str, secao_fofoca: str = "") -> str:
+def formatar_mensagem(ocorrencias: list[dict], data_str: str) -> str:
     """
-    Formata a mensagem de WhatsApp com as ocorrências encontradas.
+    Formata a mensagem principal de WhatsApp com as ocorrências encontradas.
+    A seção de fofocas é enviada separadamente após os PDFs.
     """
     linhas = [
         f"📢 *MONITORAMENTO — Diário Oficial de Mossoró*\n",
@@ -899,10 +907,7 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str, secao_fofoca: str 
             "",
         ]
 
-    mensagem_base = "\n".join(l for l in linhas if l is not None)
-    if secao_fofoca:
-        return mensagem_base + secao_fofoca
-    return mensagem_base
+    return "\n".join(l for l in linhas if l is not None)
 
 
 def buscar_url_pdf(url_publicacao: str) -> str | None:
@@ -1250,9 +1255,19 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
     )
 
 
-def enviar_whatsapp(mensagem: str, grupo: str, caminhos_pdf: list[str] = None) -> bool:
+def enviar_whatsapp(
+    mensagem: str,
+    grupo: str,
+    caminhos_pdf: list[str] = None,
+    mensagem_apos_pdf: str = "",
+) -> bool:
     """
     Envia a mensagem para o grupo do WhatsApp via Selenium + WhatsApp Web.
+
+    Fluxo de envio (dentro de uma única sessão do Chrome):
+      1. Mensagem de texto principal
+      2. PDFs individualmente (um por ocorrência)
+      3. mensagem_apos_pdf, se não vazia (ex.: Fofoca da Secretaria)
 
     Suporta dois modos de operação:
 
@@ -1458,6 +1473,32 @@ def enviar_whatsapp(mensagem: str, grupo: str, caminhos_pdf: list[str] = None) -
                 else:
                     log.warning(f"Arquivo PDF não encontrado: {caminho}")
 
+        # Envia mensagem de fofoca após todos os PDFs (mesma sessão Chrome)
+        if mensagem_apos_pdf:
+            log.info("Enviando mensagem pós-PDF (Fofoca da Secretaria)...")
+            xpaths_msg_pos = [
+                '//div[@contenteditable="true"][@data-tab="10"]',
+                '//div[@role="textbox"][@data-tab="10"]',
+                '//div[@contenteditable="true"][contains(@aria-label,"ensagem")]',
+            ]
+            caixa_pos = None
+            for xpath in xpaths_msg_pos:
+                try:
+                    caixa_pos = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, xpath))
+                    )
+                    break
+                except Exception:
+                    pass
+            if caixa_pos:
+                _colar_no_elemento(driver, caixa_pos, mensagem_apos_pdf.strip())
+                time.sleep(0.5)
+                caixa_pos.send_keys(Keys.ENTER)
+                log.info("Mensagem pós-PDF enviada com sucesso!")
+                time.sleep(2)
+            else:
+                log.warning("Caixa de mensagem não encontrada para envio pós-PDF.")
+
         return True
 
     except Exception as e:
@@ -1513,15 +1554,14 @@ def main():
             f"📅 Edição: {publicacao['data']}\n\n"
             f"❌ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."
         )
-        if secao_fofoca:
-            mensagem_vazia += secao_fofoca
-        enviar_whatsapp(mensagem_vazia, WHATSAPP_GRUPO)
+        # Fofoca enviada como segunda mensagem, mesmo sem PDFs
+        enviar_whatsapp(mensagem_vazia, WHATSAPP_GRUPO, mensagem_apos_pdf=secao_fofoca)
         return
 
     log.info(f"{len(ocorrencias)} ocorrência(s) encontrada(s). Preparando envio...")
 
-    # 5. Formata a mensagem de texto (com fofocas integradas se houver)
-    mensagem = formatar_mensagem(ocorrencias, publicacao["data"], secao_fofoca)
+    # 5. Formata a mensagem de texto principal (sem fofoca — enviada separadamente)
+    mensagem = formatar_mensagem(ocorrencias, publicacao["data"])
 
     # 6. Baixa o PDF e gera um arquivo separado por ocorrência
     url_pdf = buscar_url_pdf(publicacao["url_html"])
@@ -1533,8 +1573,8 @@ def main():
     else:
         log.warning("PDF não encontrado — apenas a mensagem de texto será enviada.")
 
-    # 7. Envia mensagem de texto e PDFs (um por ocorrência) no WhatsApp
-    sucesso = enviar_whatsapp(mensagem, WHATSAPP_GRUPO, caminhos_pdf)
+    # 7. Envia: (1) mensagem principal, (2) PDFs, (3) fofoca — tudo na mesma sessão
+    sucesso = enviar_whatsapp(mensagem, WHATSAPP_GRUPO, caminhos_pdf, mensagem_apos_pdf=secao_fofoca)
 
     # 8. Remove os PDFs temporários após envio
     for caminho in caminhos_pdf:
