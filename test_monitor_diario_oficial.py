@@ -978,14 +978,14 @@ class TestEnviarWhatsapp:
 
 
 # ══════════════════════════════════════════════════════════════
-# 7. _enviar_arquivo_no_grupo
+# 7. _enviar_arquivos_no_grupo
 # Verifica que o botão de envio é REALMENTE clicado — não apenas
 # que a função retorna sem erro (que é o bug atual).
 # ══════════════════════════════════════════════════════════════
 
 class TestEnviarArquivoNoGrupo:
     """
-    Testa _enviar_arquivo_no_grupo isoladamente.
+    Testa _enviar_arquivos_no_grupo isoladamente.
 
     O bug reportado: a função loga "enviado com sucesso" mas o arquivo
     não é enviado porque o botão não foi encontrado e o fallback Enter
@@ -1003,9 +1003,10 @@ class TestEnviarArquivoNoGrupo:
         driver.execute_script.return_value = None
         return driver, mock_input
 
+    @patch("monitor_diario_oficial.os.path.isfile", return_value=True)
     @patch("monitor_diario_oficial.time.sleep")
     @patch("monitor_diario_oficial.WebDriverWait")
-    def test_click_chamado_quando_xpath_encontra_botao(self, mock_wait_cls, mock_sleep):
+    def test_click_chamado_quando_xpath_encontra_botao(self, mock_wait_cls, mock_sleep, mock_isfile):
         """
         Caminho feliz: clipe → Documentos → botão enviar clicado.
         click() DEVE ser chamado no botão de envio para confirmar o envio real.
@@ -1024,15 +1025,16 @@ class TestEnviarArquivoNoGrupo:
             mock_btn_enviar,  # botão de enviar encontrado
         ]
 
-        monitor._enviar_arquivo_no_grupo(driver, "arquivo.pdf")
+        monitor._enviar_arquivos_no_grupo(driver, ["arquivo.pdf"])
 
         mock_btn_enviar.click.assert_called_once(), (
             "O botão de envio DEVE ser clicado para que o arquivo seja enviado"
         )
 
+    @patch("monitor_diario_oficial.os.path.isfile", return_value=True)
     @patch("monitor_diario_oficial.time.sleep")
     @patch("monitor_diario_oficial.WebDriverWait")
-    def test_javascript_fallback_chamado_quando_xpath_falha(self, mock_wait_cls, mock_sleep):
+    def test_javascript_fallback_chamado_quando_xpath_falha(self, mock_wait_cls, mock_sleep, mock_isfile):
         """
         XPath não encontra o botão de envio → fallback JavaScript DEVE ser
         executado com seletores do botão real do WhatsApp Web.
@@ -1049,16 +1051,17 @@ class TestEnviarArquivoNoGrupo:
         )
         driver.execute_script.return_value = '[data-testid="wds-ic-send-filled"]'
 
-        monitor._enviar_arquivo_no_grupo(driver, "arquivo.pdf")
+        monitor._enviar_arquivos_no_grupo(driver, ["arquivo.pdf"])
 
         js_calls = [str(c) for c in driver.execute_script.call_args_list]
         assert any("wds-ic-send-filled" in c for c in js_calls), (
             "O fallback JavaScript deve buscar pelo seletor confirmado do WhatsApp Web"
         )
 
+    @patch("monitor_diario_oficial.os.path.isfile", return_value=True)
     @patch("monitor_diario_oficial.time.sleep")
     @patch("monitor_diario_oficial.WebDriverWait")
-    def test_levanta_excecao_quando_botao_nao_encontrado(self, mock_wait_cls, mock_sleep):
+    def test_levanta_excecao_quando_botao_nao_encontrado(self, mock_wait_cls, mock_sleep, mock_isfile):
         """
         Quando XPath e JavaScript falham, a função DEVE levantar Exception
         em vez de retornar silenciosamente como se tivesse enviado.
@@ -1075,11 +1078,12 @@ class TestEnviarArquivoNoGrupo:
         driver.execute_script.return_value = None  # JS não encontrou nada
 
         with pytest.raises(Exception, match="[Bb]otão"):
-            monitor._enviar_arquivo_no_grupo(driver, "arquivo.pdf")
+            monitor._enviar_arquivos_no_grupo(driver, ["arquivo.pdf"])
 
+    @patch("monitor_diario_oficial.os.path.isfile", return_value=True)
     @patch("monitor_diario_oficial.time.sleep")
     @patch("monitor_diario_oficial.WebDriverWait")
-    def test_nao_retorna_sucesso_sem_clicar_botao(self, mock_wait_cls, mock_sleep):
+    def test_nao_retorna_sucesso_sem_clicar_botao(self, mock_wait_cls, mock_sleep, mock_isfile):
         """
         Quando nenhum botão de envio é encontrado, a função deve levantar
         Exception — nunca retornar silenciosamente como se tivesse enviado.
@@ -1096,7 +1100,7 @@ class TestEnviarArquivoNoGrupo:
         driver.execute_script.return_value = None
 
         try:
-            monitor._enviar_arquivo_no_grupo(driver, "arquivo.pdf")
+            monitor._enviar_arquivos_no_grupo(driver, ["arquivo.pdf"])
             pytest.fail(
                 "BUG: a função retornou sem erro mas nenhum botão foi clicado — "
                 "o arquivo NÃO foi enviado."
@@ -1444,7 +1448,7 @@ class TestPromovidoRemanejado:
         fofocas = [self._exon("FULANO", cc="CC15"), self._nom("FULANO", cc="CC11")]
         consolidado = monitor.promovido_remanejado(fofocas)
         resultado = monitor.formatar_fofocas(consolidado)
-        assert "⬆️" in resultado
+        assert "🔝" in resultado
 
     def test_formatar_remanejado_usa_emoji_setas(self):
         fofocas = [self._exon("FULANO", cc="CC11"), self._nom("FULANO", cc="CC11")]

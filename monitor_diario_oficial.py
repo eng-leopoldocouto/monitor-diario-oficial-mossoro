@@ -37,8 +37,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 
-# webdriver_manager só é necessário no modo local (não-Docker).
-# A importação é opcional para não exigir a dependência dentro do container.
 try:
     from webdriver_manager.chrome import ChromeDriverManager
 except ImportError:
@@ -64,7 +62,6 @@ except ImportError:
 #   NOME_SALA            — identificação da sala exibida nas mensagens        [obrigatório]
 #   SECRETARIAS_MOSSORO  — secretarias monitoradas, separadas por vírgula    [opcional]
 #   TIMEOUT_QR_CODE      — segundos para escanear o QR code (padrão: 120)   [opcional]
-#   SELENIUM_URL         — URL do WebDriver remoto (Docker)                  [opcional]
 #   WHATSAPP_PROFILE_DIR — caminho do perfil Chrome para sessão WhatsApp     [opcional]
 #   LOG_DIR              — pasta de logs (padrão: mesma pasta do script)     [opcional]
 #   HORARIO_EXECUCAO     — horário HH:MM para --agendar (padrão: 05:00)     [opcional]
@@ -103,7 +100,7 @@ if not NOMES_MONITORADOS:
 _SECRETARIAS_PADRAO = [
     "SECRETARIA MUNICIPAL DE INFRAESTRUTURA",
     "SECRETARIA MUNICIPAL DE SAÚDE",
-    "SECRETARIA MUNICIPAL DE EDUCAÇÃO",
+    '''"SECRETARIA MUNICIPAL DE EDUCAÇÃO",
     "SECRETARIA MUNICIPAL DE FINANÇAS",
     "SECRETARIA MUNICIPAL DE ADMINISTRAÇÃO",
     "SECRETARIA MUNICIPAL DE ASSISTÊNCIA SOCIAL",
@@ -123,7 +120,7 @@ _SECRETARIAS_PADRAO = [
     "SECRETARIA MUNICIPAL DE DEFESA CIVIL",
     "GABINETE DO PREFEITO",
     "PROCURADORIA GERAL DO MUNICÍPIO",
-    "CONTROLADORIA GERAL DO MUNICÍPIO",
+    "CONTROLADORIA GERAL DO MUNICÍPIO",'''
 ]
 SECRETARIAS_MOSSORO: list[str] = _ler_lista_env("SECRETARIAS_MOSSORO", _SECRETARIAS_PADRAO)
 
@@ -138,19 +135,17 @@ TIMEOUT_QR_CODE: int = int(os.environ.get("TIMEOUT_QR_CODE", "120"))
 # URL base do Diário Oficial de Mossoró (pública — não é dado sensível)
 BASE_URL = "https://dom.mossoro.rn.gov.br"
 
-# ── Modo de operação ────────────────────────────────────────────────────────
-# SELENIUM_URL vazio  → ChromeDriver local (Windows/Linux com Chrome instalado)
-# SELENIUM_URL preench→ Selenium Grid remoto (Docker)
-SELENIUM_URL: str = os.environ.get("SELENIUM_URL", "").strip()
-
-# Perfil Chrome com sessão do WhatsApp.
-# Modo local : pasta ".whatsapp_profile" ao lado do script
-# Modo Docker: caminho dentro do container Selenium (configurável via env)
+# Perfil Chrome com sessão do WhatsApp (pasta ".whatsapp_profile" ao lado do script).
 _profile_padrao = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".whatsapp_profile")
 WHATSAPP_PROFILE_DIR: str = os.environ.get("WHATSAPP_PROFILE_DIR", _profile_padrao)
 
-# Pasta de logs (padrão: mesma pasta do script; em Docker use /app/logs montado)
+# Pasta de logs (padrão: mesma pasta do script).
 LOG_DIR: str = os.environ.get("LOG_DIR", os.path.dirname(os.path.abspath(__file__)))
+
+# Pasta para PDFs temporários gerados durante o fatiamento do Diário Oficial.
+# Configurável via PDF_TEMP_DIR no .env; padrão: "pdfs_temporarios" ao lado do script.
+_pdf_temp_padrao = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pdfs_temporarios")
+PDF_TEMP_DIR: str = os.environ.get("PDF_TEMP_DIR", _pdf_temp_padrao)
 
 
 # ─────────────────────────────────────────────
@@ -189,6 +184,7 @@ def configurar_logging() -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     os.makedirs(LOG_DIR, exist_ok=True)
+    os.makedirs(PDF_TEMP_DIR, exist_ok=True)
     log_path = os.path.join(LOG_DIR, "monitor_dom.log")
     arquivo_handler = logging.handlers.RotatingFileHandler(
         log_path,
@@ -258,7 +254,7 @@ def _colar_no_elemento(driver, elemento, texto: str) -> None:
 
     Suporta qualquer Unicode — incluindo emoji (📂 🔔 📅, código > U+FFFF) —
     sem depender do clipboard do sistema operacional.
-    Funciona tanto com ChromeDriver local quanto com Selenium Grid remoto (Docker).
+    Funciona com ChromeDriver local.
 
     Estratégia em cascata:
       1. CDP Input.insertText   — nativo do Chrome, sem clipboard, qualquer Unicode
@@ -274,7 +270,7 @@ def _colar_no_elemento(driver, elemento, texto: str) -> None:
     time.sleep(0.05)
 
     # ── Estratégia 1: CDP Input.insertText ──────────────────────────────────
-    # Funciona em Chrome local E em Selenium 4 Grid remoto (Docker).
+    # Funciona em Chrome local.
     # Insere texto no ponto de foco atual (substitui seleção), sem restrição BMP.
     try:
         driver.execute_cdp_cmd("Input.insertText", {"text": texto})
@@ -318,7 +314,7 @@ def _colar_no_elemento(driver, elemento, texto: str) -> None:
         log.debug(f"JavaScript execCommand falhou: {e}")
 
     # ── Estratégia 3: clipboard do Windows (somente Windows local) ───────────
-    if platform.system() == "Windows" and not SELENIUM_URL:
+    if platform.system() == "Windows":
         try:
             _colar_windows(elemento, texto)
             log.debug("_colar_no_elemento: texto inserido via clipboard Windows")
@@ -977,7 +973,8 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
         return []
 
     reader = PdfReader(io.BytesIO(resp.content))
-    pasta = os.path.dirname(os.path.abspath(__file__))
+    pasta = PDF_TEMP_DIR  # PDFs temporários salvos em subpasta dedicada
+    os.makedirs(pasta, exist_ok=True)
     caminhos_gerados = []
 
     # Monta texto combinado de todas as páginas para localizar spans de portarias.
@@ -1079,13 +1076,22 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
     return caminhos_gerados
 
 
-def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
+def _enviar_arquivos_no_grupo(driver, caminhos_pdf: list) -> None:
     """
-    Envia um arquivo PDF para o grupo já aberto no WhatsApp Web.
+    Envia um ou mais arquivos PDF para o grupo já aberto no WhatsApp Web,
+    em uma única operação de anexo (clip → Documentos → send_keys com todos
+    os caminhos separados por '\\n' → botão Enviar).
+
     Deve ser chamado após o grupo estar visível na janela do driver.
     """
-    caminho_abs = os.path.abspath(caminho_pdf)
-    log.info(f"Enviando arquivo: {caminho_abs}")
+    caminhos_abs = [os.path.abspath(p) for p in caminhos_pdf if os.path.isfile(p)]
+    ignorados = [p for p in caminhos_pdf if not os.path.isfile(p)]
+    for p in ignorados:
+        log.warning(f"Arquivo PDF não encontrado (ignorado): {p}")
+    if not caminhos_abs:
+        log.warning("Nenhum arquivo PDF válido para enviar.")
+        return
+    log.info(f"Enviando {len(caminhos_abs)} PDF(s) de uma vez: {[os.path.basename(p) for p in caminhos_abs]}")
 
     # Localiza o botão de anexar (ícone de clipe)
     xpaths_clipe = [
@@ -1178,7 +1184,9 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
     if input_arquivo is None:
         raise Exception("Input de arquivo não encontrado após abrir menu de anexos.")
 
-    # Garante que o input esteja interagível e envia o caminho absoluto do arquivo.
+    # Garante que o input esteja interagível e envia todos os caminhos de uma vez.
+    # O ChromeDriver aceita múltiplos caminhos separados por '\n' em input[type="file"]
+    # quando multiple está presente (ou mesmo sem ele, dependendo da versão).
     # IMPORTANTE: nunca use send_keys(Keys.ENTER) em input[type="file"] — o ChromeDriver
     # interpreta qualquer string enviada como caminho de arquivo e lança "File not found".
     driver.execute_script(
@@ -1187,9 +1195,11 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
         "arguments[0].removeAttribute('hidden');",
         input_arquivo,
     )
-    input_arquivo.send_keys(caminho_abs)
-    log.info("Caminho do arquivo enviado ao input.")
-    time.sleep(8)  # Aguarda pré-visualização do arquivo carregar
+    input_arquivo.send_keys("\n".join(caminhos_abs))
+    log.info(f"{len(caminhos_abs)} caminho(s) enviado(s) ao input.")
+    espera_preview = 8 + max(0, (len(caminhos_abs) - 1) * 2)  # +2s por arquivo extra
+    log.info(f"Aguardando pré-visualização ({espera_preview}s)...")
+    time.sleep(espera_preview)
 
     # Clica no botão de enviar da pré-visualização do anexo.
     # Seletor confirmado via inspeção do DOM real do WhatsApp Web (2025):
@@ -1214,7 +1224,7 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
                 EC.element_to_be_clickable((By.XPATH, xpath))
             )
             btn_enviar.click()
-            log.info(f"PDF enviado com sucesso! (via {xpath})")
+            log.info(f"{len(caminhos_abs)} PDF(s) enviado(s) com sucesso! (via {xpath})")
             time.sleep(3)
             return
         except Exception:
@@ -1246,7 +1256,7 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
             return null;
         """)
         if enviado:
-            log.info(f"PDF enviado com sucesso via JavaScript fallback (seletor: {enviado}).")
+            log.info(f"{len(caminhos_abs)} PDF(s) enviado(s) com sucesso via JavaScript fallback (seletor: {enviado}).")
             time.sleep(3)
             return
     except Exception as e:
@@ -1268,7 +1278,7 @@ def _enviar_arquivo_no_grupo(driver, caminho_pdf: str) -> None:
         pass
 
     raise Exception(
-        "Botão de enviar não encontrado após upload do PDF. "
+        f"Botão de enviar não encontrado após upload de {len(caminhos_abs)} PDF(s). "
         "Verifique os logs (nível DEBUG) para ver o HTML da pré-visualização "
         "e identificar o seletor correto."
     )
@@ -1285,85 +1295,48 @@ def enviar_whatsapp(
 
     Fluxo de envio (dentro de uma única sessão do Chrome):
       1. Mensagem de texto principal
-      2. PDFs individualmente (um por ocorrência)
+      2. Todos os PDFs de uma vez (única operação de anexo)
       3. mensagem_apos_pdf, se não vazia (ex.: Fofoca da Secretaria)
 
-    Suporta dois modos de operação:
-
-    Modo local (SELENIUM_URL vazio — padrão Windows/instalação direta):
-      • Inicia o Chrome localmente via ChromeDriver.
-      • Verifica no filesystem se há sessão WhatsApp salva.
-      • Perfil Chrome salvo em WHATSAPP_PROFILE_DIR (pasta local).
-
-    Modo Docker (SELENIUM_URL definido — ex.: http://selenium:4444/wd/hub):
-      • Conecta ao Selenium Grid remoto (container selenium/standalone-chrome).
-      • A sessão WhatsApp é persistida no volume Docker montado no container Selenium.
-      • O noVNC do container permite escanear o QR code via browser (porta 7900).
-      • LocalFileDetector transfere automaticamente arquivos PDF para o container remoto.
+    Inicia o Chrome localmente via ChromeDriver.
+    O perfil Chrome (sessão WhatsApp) é salvo em WHATSAPP_PROFILE_DIR.
     """
     log.info(f"Enviando mensagem para o grupo WhatsApp: '{grupo}'")
-    modo_docker = bool(SELENIUM_URL)
 
     # ── Detecção de sessão e timeout de autenticação ─────────────────────────
-    if modo_docker:
-        # Em modo Docker, o perfil fica no container Selenium — não é possível
-        # inspecionar o filesystem remotamente. Usa timeout completo e deixa
-        # o Chrome decidir: se a sessão existe no volume, carrega em < 10 s.
-        timeout_auth = TIMEOUT_QR_CODE
+    sessao_valida = os.path.isdir(
+        os.path.join(
+            WHATSAPP_PROFILE_DIR,
+            "Default", "IndexedDB",
+            "https_web.whatsapp.com_0.indexeddb.leveldb",
+        )
+    )
+    timeout_auth = 30 if sessao_valida else TIMEOUT_QR_CODE
+    if not sessao_valida:
         log.info(
-            f"Modo Docker: conectando ao Selenium em {SELENIUM_URL}\n"
-            f"Para escanear o QR code (1ª execução), acesse: "
-            f"http://localhost:7900  (senha: veja VNC_PASSWORD no .env)"
+            "Sessão do WhatsApp não encontrada — Chrome abrirá para autenticação.\n"
+            f"Escaneie o QR code no WhatsApp do celular. "
+            f"Você tem {TIMEOUT_QR_CODE} segundos."
         )
-    else:
-        # Modo local: verifica IndexedDB do WhatsApp no filesystem
-        sessao_valida = os.path.isdir(
-            os.path.join(
-                WHATSAPP_PROFILE_DIR,
-                "Default", "IndexedDB",
-                "https_web.whatsapp.com_0.indexeddb.leveldb",
-            )
-        )
-        timeout_auth = 30 if sessao_valida else TIMEOUT_QR_CODE
-        if not sessao_valida:
-            log.info(
-                "Sessão do WhatsApp não encontrada — Chrome abrirá para autenticação.\n"
-                f"Escaneie o QR code no WhatsApp do celular. "
-                f"Você tem {TIMEOUT_QR_CODE} segundos."
-            )
 
     # ── Opções do Chrome ─────────────────────────────────────────────────────
     options = webdriver.ChromeOptions()
     options.add_argument(f"--user-data-dir={WHATSAPP_PROFILE_DIR}")
     options.add_argument("--profile-directory=Default")
     options.add_argument("--remote-allow-origins=*")
-    # Flags necessárias em ambientes sem GPU (Docker/CI)
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
 
     driver = None
     try:
-        if modo_docker:
-            # ── Modo Docker: RemoteWebDriver ─────────────────────────────────
-            driver = webdriver.Remote(
-                command_executor=SELENIUM_URL,
-                options=options,
+        if ChromeDriverManager is None:
+            raise ImportError(
+                "webdriver-manager não instalado. "
+                "Execute: pip install webdriver-manager"
             )
-            # LocalFileDetector faz o Selenium transferir automaticamente
-            # arquivos locais (PDF) para o container remoto ao usar send_keys
-            # em <input type="file"> — sem ele o ChromeDriver não encontraria o arquivo.
-            from selenium.webdriver.remote.file_detector import LocalFileDetector
-            driver.file_detector = LocalFileDetector()
-        else:
-            # ── Modo local: ChromeDriver gerenciado automaticamente ───────────
-            if ChromeDriverManager is None:
-                raise ImportError(
-                    "webdriver-manager não instalado. "
-                    "Execute: pip install webdriver-manager"
-                )
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=options)
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
 
         wait = WebDriverWait(driver, timeout_auth)
         wait_curto = WebDriverWait(driver, 30)
@@ -1482,15 +1455,10 @@ def enviar_whatsapp(
         log.info("Mensagem de texto enviada com sucesso!")
         time.sleep(2)
 
-        # Envia cada PDF individualmente (um por ocorrência)
+        # Envia todos os PDFs de uma vez (uma única operação de anexo)
         if caminhos_pdf:
-            for i, caminho in enumerate(caminhos_pdf, start=1):
-                if os.path.isfile(caminho):
-                    log.info(f"Enviando PDF {i}/{len(caminhos_pdf)}: {os.path.basename(caminho)}")
-                    _enviar_arquivo_no_grupo(driver, caminho)
-                    time.sleep(2)
-                else:
-                    log.warning(f"Arquivo PDF não encontrado: {caminho}")
+            _enviar_arquivos_no_grupo(driver, caminhos_pdf)
+            time.sleep(2)
 
         # Envia mensagem de fofoca após todos os PDFs (mesma sessão Chrome)
         if mensagem_apos_pdf:
@@ -1611,8 +1579,7 @@ def _agendar_execucao(horario: str) -> None:
     """
     Executa main() todos os dias no horário especificado (loop infinito).
 
-    Utilizado pelo container Docker para substituir o cron do SO.
-    O fuso horário respeitado é o da variável de ambiente TZ do container.
+    O fuso horário utilizado é o local do sistema.
 
     Args:
         horario: Horário de execução no formato "HH:MM" (ex: "07:30").
@@ -1623,10 +1590,7 @@ def _agendar_execucao(horario: str) -> None:
         log.error(f"Formato de horário inválido: '{horario}' — use HH:MM (ex: 07:30)")
         sys.exit(1)
 
-    log.info(
-        f"Modo agendado ativo — execução diária às {horario} "
-        f"(TZ={os.environ.get('TZ', 'local do sistema')})"
-    )
+    log.info(f"Modo agendado ativo — execução diária às {horario}.")
 
     # Executa imediatamente se o horário configurado já passou hoje,
     # evitando esperar quase 24 h na primeira execução do dia.
@@ -1654,7 +1618,7 @@ def _agendar_execucao(horario: str) -> None:
 
 
 if __name__ == "__main__":
-    # ── Modo agendado (Docker / execução contínua) ───────────────────────────
+    # ── Modo agendado (execução contínua) ────────────────────────────────────
     # Acionado APENAS por: python monitor_diario_oficial.py --agendar
     # HORARIO_EXECUCAO define o horário, mas NÃO ativa o modo sozinho.
     # Agendamento externo (Claude Routines, Task Scheduler, cron):
