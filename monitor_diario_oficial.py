@@ -818,7 +818,7 @@ def formatar_fofocas(fofocas: list[dict]) -> str:
 
     if not fofocas:
         linhas += [
-            "_Silêncio💤 absoluto nos bastidores...\nNenhuma movimentação de pessoal detectada nesta edição._",
+            "💤 Silêncio absoluto nos bastidores...\nNenhuma movimentação de pessoal detectada nesta edição.",
             "",
         ]
         return "\n".join(linhas)
