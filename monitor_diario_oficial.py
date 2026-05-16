@@ -328,6 +328,42 @@ def _colar_no_elemento(driver, elemento, texto: str) -> None:
     elemento.send_keys(texto)
 
 
+def _atualizar_env(chave: str, valor: str) -> None:
+    """
+    Atualiza ou insere uma chave no arquivo .env ao lado do script.
+
+    - Se a chave já existe (linha não comentada), substitui o valor.
+    - Se não existe, acrescenta ao final do arquivo.
+    """
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.isfile(env_path):
+        log.warning(f"Arquivo .env não encontrado em: {env_path} — valor não salvo.")
+        return
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        linhas = f.readlines()
+
+    padrao = re.compile(rf"^{re.escape(chave)}\s*=")
+    nova_linha = f"{chave}={valor}\n"
+    encontrou = False
+    for i, linha in enumerate(linhas):
+        if padrao.match(linha):
+            linhas[i] = nova_linha
+            encontrou = True
+            break
+
+    if not encontrou:
+        # Garante quebra de linha antes da nova entrada
+        if linhas and not linhas[-1].endswith("\n"):
+            linhas.append("\n")
+        linhas.append(nova_linha)
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.writelines(linhas)
+
+    log.info(f".env atualizado: {chave}={valor}")
+
+
 # ─────────────────────────────────────────────
 # FUNÇÕES PRINCIPAIS
 # ─────────────────────────────────────────────
@@ -466,9 +502,13 @@ def buscar_ultima_publicacao() -> dict | None:
     date_match = re.search(r"(\d{2}/\d{2}/\d{4})", texto)
     data_str = date_match.group(1) if date_match else "data desconhecida"
 
+    # Extrai o número da edição do DOM (ex: "DOM Nº 820" → 820)
+    num_match = re.search(r"DOM\s+N[ºo°]?\s*(\d+)", texto, re.IGNORECASE)
+    numero = int(num_match.group(1)) if num_match else None
+
     url_html = f"{BASE_URL}/dom/publicacao/{pub_id}"
-    log.info(f"Última edição: ID {pub_id} — {data_str} — {url_html}")
-    return {"id": pub_id, "data": data_str, "url_html": url_html}
+    log.info(f"Última edição: ID {pub_id} — Nº {numero} — {data_str} — {url_html}")
+    return {"id": pub_id, "numero": numero, "data": data_str, "url_html": url_html}
 
 
 def extrair_portarias(url_html: str) -> list[dict]:
@@ -880,15 +920,16 @@ def formatar_fofocas(fofocas: list[dict]) -> str:
     return "\n".join(linhas)
 
 
-def formatar_mensagem(ocorrencias: list[dict], data_str: str) -> str:
+def formatar_mensagem(ocorrencias: list[dict], data_str: str, numero: int | None = None) -> str:
     """
     Formata a mensagem principal de WhatsApp com as ocorrências encontradas.
     A seção de fofocas é enviada separadamente após os PDFs.
     """
+    edicao_str = f"📅 EDIÇÃO Nº {numero}: {data_str}" if numero else f"📅 EDIÇÃO: {data_str}"
     linhas = [
         f"📢 *MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ*\n",
         f"👥 *{NOME_SALA}*\n",
-        f"📅 EDIÇÃO: {data_str}",
+        edicao_str,
         f"🔍 {len(ocorrencias)} ocorrência(s) encontrada(s)\n",
     ]
 
@@ -1513,6 +1554,20 @@ def main():
         log.warning("Não foi possível obter a última edição do DOM. Encerrando.")
         return
 
+    # 2. Verifica se a edição já foi monitorada (evita reprocessar a mesma edição)
+    numero_atual = publicacao.get("numero")
+    ultimo_salvo = int(os.environ.get("ULTIMO_DOM_NUMERO", "0"))
+    if numero_atual is not None and numero_atual <= ultimo_salvo:
+        log.info(
+            f"Edição Nº {numero_atual} já foi monitorada "
+            f"(último número salvo: {ultimo_salvo}). Encerrando."
+        )
+        return
+
+    # 2a. Persiste o número da edição atual no .env para evitar reprocessamento futuro
+    if numero_atual is not None:
+        _atualizar_env("ULTIMO_DOM_NUMERO", str(numero_atual))
+
     # 3. Extrai os atos (portarias, decretos, etc.) da publicação
     portarias = extrair_portarias(publicacao["url_html"])
 
@@ -1535,10 +1590,14 @@ def main():
 
     if not ocorrencias:
         log.info("Nenhum nome monitorado encontrado — enviando aviso ao WhatsApp.")
+        edicao_vazia = (
+            f"📅 Edição Nº {numero_atual}: {publicacao['data']}"
+            if numero_atual else f"📅 Edição: {publicacao['data']}"
+        )
         mensagem_vazia = (
             f"📢 *MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ*\n"
             f"👥 *{NOME_SALA}*\n"
-            f"📅 Edição: {publicacao['data']}\n\n"
+            f"{edicao_vazia}\n\n"
             f"❌ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."
         )
         # Fofoca enviada como segunda mensagem, mesmo sem PDFs
@@ -1548,7 +1607,7 @@ def main():
     log.info(f"{len(ocorrencias)} ocorrência(s) encontrada(s). Preparando envio...")
 
     # 5. Formata a mensagem de texto principal (sem fofoca — enviada separadamente)
-    mensagem = formatar_mensagem(ocorrencias, publicacao["data"])
+    mensagem = formatar_mensagem(ocorrencias, publicacao["data"], numero_atual)
 
     # 6. Baixa o PDF e gera um arquivo separado por ocorrência
     url_pdf = buscar_url_pdf(publicacao["url_html"])
