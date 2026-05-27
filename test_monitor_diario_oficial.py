@@ -1175,6 +1175,21 @@ class TestExtrairDadosFofoca:
     )
     SEC4 = "SECRETARIA MUNICIPAL DE SERVIÇOS URBANOS"
 
+    # ── Exemplo 5: EXONERAR com qualificador ", a pedido," ───────────────────
+    # Regressão: Portaria Nº 509/2026 — o qualificador entre vírgulas após
+    # EXONERAR fazia o nome ser capturado como "PESSOA NÃO IDENTIFICADA".
+    # "Art. 1º EXONERAR, a pedido, o servidor DANIEL VICTOR CARLOS DE NORONHA
+    #  do cargo em comissão de Assessor Técnico II, símbolo CC11, na função de
+    #  Assessor Técnico, com lotação na Secretaria Municipal de Infraestrutura
+    #  da Prefeitura Municipal de Mossoró."
+    PARA5 = (
+        "ART. 1 EXONERAR, A PEDIDO, O SERVIDOR DANIEL VICTOR CARLOS DE NORONHA "
+        "DO CARGO EM COMISSÃO DE ASSESSOR TÉCNICO II, SÍMBOLO CC11, NA FUNÇÃO DE "
+        "ASSESSOR TÉCNICO, COM LOTAÇÃO NA SECRETARIA MUNICIPAL DE INFRAESTRUTURA "
+        "DA PREFEITURA MUNICIPAL DE MOSSORÓ."
+    )
+    SEC5 = "SECRETARIA MUNICIPAL DE INFRAESTRUTURA"
+
     # ── Exemplo 1: NOMEAR homem ──────────────────────────────────────────────
 
     def test_ex1_nome_nomear_homem(self):
@@ -1258,6 +1273,40 @@ class TestExtrairDadosFofoca:
         r = monitor._extrair_dados_fofoca(self.PARA4, self.SEC4)
         assert r["cargo"] != "cargo não identificado"
         assert "DIRETOR" in r["cargo"].upper()
+
+    # ── Exemplo 5: EXONERAR com qualificador ", a pedido," ───────────────────
+
+    def test_ex5_nome_exonerar_a_pedido(self):
+        """
+        Regressão — Portaria 509/2026.
+        EXONERAR seguido de ', a pedido,' não deve resultar em 'PESSOA NÃO IDENTIFICADA'.
+        """
+        r = monitor._extrair_dados_fofoca(self.PARA5, self.SEC5)
+        assert r is not None
+        assert r["pessoa"] == "DANIEL VICTOR CARLOS DE NORONHA"
+
+    def test_ex5_nome_nao_contem_pessoa_nao_identificada(self):
+        """O fallback 'PESSOA NÃO IDENTIFICADA' não deve aparecer quando o nome existe."""
+        r = monitor._extrair_dados_fofoca(self.PARA5, self.SEC5)
+        assert r["pessoa"] != "PESSOA NÃO IDENTIFICADA"
+
+    def test_ex5_nome_nao_contem_qualificador(self):
+        """O qualificador 'A PEDIDO' não deve fazer parte do nome capturado."""
+        r = monitor._extrair_dados_fofoca(self.PARA5, self.SEC5)
+        assert "PEDIDO" not in r["pessoa"]
+
+    def test_ex5_acao_exonerar_a_pedido(self):
+        r = monitor._extrair_dados_fofoca(self.PARA5, self.SEC5)
+        assert r["acao"] == "EXONERADO(A)"
+
+    def test_ex5_cc_exonerar_a_pedido(self):
+        r = monitor._extrair_dados_fofoca(self.PARA5, self.SEC5)
+        assert r["simbolo_cc"] == "CC11"
+
+    def test_ex5_cargo_exonerar_a_pedido(self):
+        r = monitor._extrair_dados_fofoca(self.PARA5, self.SEC5)
+        assert r["cargo"] != "cargo não identificado"
+        assert "ASSESSOR" in r["cargo"].upper()
 
     # ── Entrada NFKD (como vem de detectar_fofocas) ─────────────────────────
 

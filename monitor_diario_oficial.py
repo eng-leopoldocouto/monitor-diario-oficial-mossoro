@@ -677,23 +677,29 @@ def _extrair_dados_fofoca(paragrafo: str, secretaria: str) -> dict | None:
     acao_str = m_acao.group(1)
     m_nome = None
 
+    # Qualificador opcional entre vírgulas após o verbo:
+    # ex. "EXONERAR, a pedido, o servidor …"
+    #     "EXONERAR, a bem do serviço, a servidora …"
+    #     "NOMEAR, nos termos do art. 5º, FULANO …"
+    _QUALIF = r'(?:,\s*[^,\r\n]+,)?'
+
     if acao_str.startswith("NOME"):
         # NOMEAR / NOMEIA / NOMEADO(A): nome termina antes de "PARA"
         m_nome = re.search(
-            rf'\b(?:NOMEAR|NOMEIA|NOMEADO[A]?)\s+({_NOME_GREED})(?=\s+PARA\b)',
+            rf'\b(?:NOMEAR|NOMEIA|NOMEADO[A]?){_QUALIF}\s+({_NOME_GREED})(?=\s+PARA\b)',
             paragrafo,
         )
         if not m_nome:
             # Fallback: captura até 7 palavras maiúsculas (padrão anterior)
             m_nome = re.search(
-                rf'\b(?:NOMEAR|NOMEIA|NOMEADO[A]?)\s+'
+                rf'\b(?:NOMEAR|NOMEIA|NOMEADO[A]?){_QUALIF}\s+'
                 rf'((?:{_LETRAS}{{2,}}\s+){{0,6}}{_LETRAS}{{2,}})',
                 paragrafo,
             )
     else:
-        # EXONERAR / EXONERA / EXONERADO(A): pula "a servidora" / "o servidor"
+        # EXONERAR / EXONERA / EXONERADO(A): pula qualificador e "a servidora"/"o servidor"
         m_nome = re.search(
-            rf'\b(?:EXONERAR|EXONERA|EXONERADO[A]?)\s+'
+            rf'\b(?:EXONERAR|EXONERA|EXONERADO[A]?){_QUALIF}\s+'
             rf'(?:(?:A|O)\s+)?(?:SERVIDORA?\s+)?'
             rf'({_NOME_GREED})(?=\s+(?:DO|DA|AO|NO|EM)\s+CARGO\b)',
             paragrafo,
@@ -701,7 +707,7 @@ def _extrair_dados_fofoca(paragrafo: str, secretaria: str) -> dict | None:
         if not m_nome:
             # Fallback: pula artigo/servidor mas sem lookahead de parada
             m_nome = re.search(
-                rf'\b(?:EXONERAR|EXONERA|EXONERADO[A]?)\s+'
+                rf'\b(?:EXONERAR|EXONERA|EXONERADO[A]?){_QUALIF}\s+'
                 rf'(?:(?:A|O)\s+)?(?:SERVIDORA?\s+)?'
                 rf'((?:{_LETRAS}{{2,}}\s+){{0,6}}{_LETRAS}{{2,}})',
                 paragrafo,
