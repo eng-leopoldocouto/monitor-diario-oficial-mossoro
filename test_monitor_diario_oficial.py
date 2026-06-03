@@ -854,8 +854,17 @@ class TestFormatarMensagem:
 
 class TestFormatarResumoPorPessoa:
 
-    def _ocorrencia(self, nome, titulo):
-        return {"nome": nome, "portaria": {"titulo": titulo, "ementa": "", "conteudo": "x"}}
+    # Conteúdo de portaria com designação real (gestor titular + substituto eventual)
+    def _conteudo(self, titular, papel, contrato, substituto):
+        return (
+            f"RESOLVE:\n"
+            f"Art. 1º Designar o servidor {titular}, matricula de n° 111, para atuar "
+            f"como {papel} DO CONTRATO n° {contrato}, firmado entre a SECRETARIA, "
+            f"tendo como substituto eventual {substituto}, matricula de n° 222."
+        )
+
+    def _ocorrencia(self, nome, titulo, conteudo="x"):
+        return {"nome": nome, "portaria": {"titulo": titulo, "ementa": "", "conteudo": conteudo}}
 
     def test_agrupa_portarias_por_pessoa_com_contagem(self):
         ocs = [
@@ -866,9 +875,8 @@ class TestFormatarResumoPorPessoa:
         ]
         resumo = monitor.formatar_resumo_por_pessoa(ocs)
         assert "👤 *RICARDO GOMES FERREIRA* (3)" in resumo
-        assert "Portarias: 31, 32, 35" in resumo
+        assert "Portaria 31" in resumo and "Portaria 32" in resumo and "Portaria 35" in resumo
         assert "👤 *BEATRIZ ALMEIDA LIMA* (1)" in resumo
-        assert "Portarias: 35" in resumo
 
     def test_ordem_segue_primeira_aparicao(self):
         ocs = [
@@ -885,7 +893,7 @@ class TestFormatarResumoPorPessoa:
         ]
         resumo = monitor.formatar_resumo_por_pessoa(ocs)
         assert "👤 *FULANO* (1)" in resumo
-        assert "Portarias: 38" in resumo
+        assert resumo.count("Portaria 38") == 1
 
     def test_conta_nomes_monitorados_no_cabecalho_do_resumo(self):
         ocs = [
@@ -895,6 +903,57 @@ class TestFormatarResumoPorPessoa:
         ]
         resumo = monitor.formatar_resumo_por_pessoa(ocs)
         assert "3 nome(s) monitorado(s) encontrado(s)" in resumo
+
+    def test_exibe_funcao_e_contrato_gestor_titular(self):
+        cont = self._conteudo("RICARDO GOMES FERREIRA", "GESTOR", "43/2024", "VALERIA SAMANTHA")
+        ocs = [self._ocorrencia("RICARDO GOMES FERREIRA", "PORTARIA Nº 32,", cont)]
+        resumo = monitor.formatar_resumo_por_pessoa(ocs)
+        assert "Portaria 32 — Gestor · Contrato 43/2024" in resumo
+
+    def test_exibe_funcao_gestor_substituto(self):
+        cont = self._conteudo("VALERIA SAMANTHA", "GESTOR", "31/2024", "RICARDO GOMES FERREIRA")
+        ocs = [self._ocorrencia("RICARDO GOMES FERREIRA", "PORTARIA Nº 31,", cont)]
+        resumo = monitor.formatar_resumo_por_pessoa(ocs)
+        assert "Portaria 31 — Gestor Substituto · Contrato 31/2024" in resumo
+
+
+class TestExtrairFuncaoContrato:
+
+    def _cont_gestor_fiscal(self):
+        return (
+            "RESOLVE:\n"
+            "Art. 1º Designar o servidor VALERIA SAMANTHA, matricula n° 1, para atuar como "
+            "GESTOR DO CONTRATO n° 08/2024, firmado entre a SECRETARIA, tendo como substituto "
+            "eventual ALAERDSON LIMA, matricula n° 2.\n"
+            "Art. 3° Designar a servidora JOSE LEOPOLDO, matricula nº 3 para atuar como FISCAL "
+            "DO CONTRATO n° 08/2024, tendo como substituto eventual FRANCISCO GUEDES, matricula n° 4."
+        )
+
+    def test_gestor_titular(self):
+        f, c = monitor._extrair_funcao_contrato(self._cont_gestor_fiscal(), "VALERIA SAMANTHA")
+        assert f == "Gestor" and c == "08/2024"
+
+    def test_gestor_substituto(self):
+        f, c = monitor._extrair_funcao_contrato(self._cont_gestor_fiscal(), "ALAERDSON LIMA")
+        assert f == "Gestor Substituto" and c == "08/2024"
+
+    def test_fiscal_titular(self):
+        f, c = monitor._extrair_funcao_contrato(self._cont_gestor_fiscal(), "JOSE LEOPOLDO")
+        assert f == "Fiscal" and c == "08/2024"
+
+    def test_fiscal_substituto(self):
+        f, c = monitor._extrair_funcao_contrato(self._cont_gestor_fiscal(), "FRANCISCO GUEDES")
+        assert f == "Fiscal Substituto" and c == "08/2024"
+
+    def test_aceita_gestora_feminino(self):
+        cont = ("Art. 1º Designar a servidora MARIA, matricula n° 1, para atuar como GESTORA "
+                "DO CONTRATO n° 10/2025, tendo como substituta eventual JOAO, matricula n° 2.")
+        f, c = monitor._extrair_funcao_contrato(cont, "MARIA")
+        assert f == "Gestor" and c == "10/2025"
+
+    def test_funcao_nao_identificada_quando_nome_ausente(self):
+        f, c = monitor._extrair_funcao_contrato(self._cont_gestor_fiscal(), "PESSOA INEXISTENTE")
+        assert f == "função não identificada"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1603,3 +1662,96 @@ class TestPromovidoRemanejado:
         resultado = monitor.formatar_fofocas(consolidado)
         assert "NOMEADO" not in resultado
         assert "EXONERADO" not in resultado
+
+
+# ══════════════════════════════════════════════════════════════
+# 10. detectar_ponto_facultativo / formatar_ponto_facultativo
+# ══════════════════════════════════════════════════════════════
+
+class TestPontoFacultativo:
+
+    def _ato(self, conteudo, titulo="DECRETO Nº 7.454"):
+        return {"titulo": titulo, "ementa": "", "conteudo": conteudo}
+
+    def test_detecta_e_extrai_data_e_dia_da_semana(self):
+        ato = self._ato(
+            "Declara ponto facultativo na sexta-feira, dia 21 de novembro de 2025, "
+            "no âmbito da Administração."
+        )
+        r = monitor.detectar_ponto_facultativo([ato])
+        assert len(r) == 1
+        assert r[0]["data_br"] == "21/11/2025"
+        assert r[0]["dia_semana"] == "sexta"   # 21/11/2025 é sexta-feira
+        assert r[0]["weekday"] == 4
+
+    def test_dedup_mesma_data_repetida_no_mesmo_ato(self):
+        ato = self._ato(
+            "ponto facultativo na sexta-feira, dia 21 de novembro de 2025.\n"
+            "Fica declarado ponto facultativo no dia 21 de novembro de 2025, sexta-feira."
+        )
+        r = monitor.detectar_ponto_facultativo([ato])
+        assert len(r) == 1  # mesma data → um único aviso
+
+    def test_datas_diferentes_geram_avisos_distintos(self):
+        ato = self._ato(
+            "ponto facultativo no dia 24 de dezembro de 2025 e também "
+            "ponto facultativo no dia 31 de dezembro de 2025."
+        )
+        r = monitor.detectar_ponto_facultativo([ato])
+        datas = {x["data_br"] for x in r}
+        assert datas == {"24/12/2025", "31/12/2025"}
+
+    def test_aceita_data_numerica(self):
+        ato = self._ato("Fica declarado ponto facultativo no dia 21/11/2025.")
+        r = monitor.detectar_ponto_facultativo([ato])
+        assert r[0]["data_br"] == "21/11/2025"
+
+    def test_sem_data_retorna_generico(self):
+        ato = self._ato("Fica declarado ponto facultativo nas repartições públicas.")
+        r = monitor.detectar_ponto_facultativo([ato])
+        assert len(r) == 1
+        assert r[0]["data_br"] is None
+
+    def test_sem_ponto_facultativo_retorna_vazio(self):
+        ato = self._ato("Decreto que dispõe sobre crédito suplementar.")
+        assert monitor.detectar_ponto_facultativo([ato]) == []
+
+    def test_deteccao_e_insensivel_a_acento_e_caixa(self):
+        ato = self._ato("PONTO FACULTATIVO no dia 21 de NOVEMBRO de 2025.")
+        r = monitor.detectar_ponto_facultativo([ato])
+        assert r[0]["data_br"] == "21/11/2025"
+
+    def test_nao_pega_data_de_emissao_do_decreto(self):
+        """A data 'DE 18 DE NOVEMBRO' (emissão, sem 'dia') não deve ser capturada."""
+        ato = self._ato(
+            "DECRETO Nº 7.454, DE 18 DE NOVEMBRO DE 2025\n"
+            "Declara ponto facultativo na sexta-feira, dia 21 de novembro de 2025."
+        )
+        r = monitor.detectar_ponto_facultativo([ato])
+        assert [x["data_br"] for x in r] == ["21/11/2025"]
+
+    def test_data_invalida_e_ignorada(self):
+        ato = self._ato("ponto facultativo no dia 31 de fevereiro de 2025.")
+        r = monitor.detectar_ponto_facultativo([ato])
+        assert r == [{"data_br": None, "dia_semana": None, "weekday": None}]
+
+    def test_manchete_sexta_vs_outro_dia(self):
+        sexta = monitor.formatar_ponto_facultativo(
+            [{"data_br": "21/11/2025", "dia_semana": "sexta", "weekday": 4}]
+        )
+        outro = monitor.formatar_ponto_facultativo(
+            [{"data_br": "24/12/2025", "dia_semana": "quarta", "weekday": 2}]
+        )
+        assert any("SEXTOU OFICIAL" in l for l in sexta)
+        assert any("FOLGA À VISTA" in l for l in outro)
+
+    def test_fofoca_anexa_ponto_facultativo_ao_final_sem_movimentacoes(self):
+        pf = [{"data_br": "21/11/2025", "dia_semana": "sexta", "weekday": 4}]
+        msg = monitor.formatar_fofocas([], pf)
+        assert "ponto facultativo na sexta, 21/11/2025" in msg
+        # aparece DEPOIS do aviso de "silêncio absoluto"
+        assert msg.index("Silêncio absoluto") < msg.index("ponto facultativo")
+
+    def test_fofoca_sem_ponto_facultativo_nao_menciona(self):
+        msg = monitor.formatar_fofocas([])
+        assert "ponto facultativo" not in msg.lower()
