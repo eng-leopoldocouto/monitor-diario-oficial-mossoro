@@ -12,7 +12,9 @@ Ferramenta que lê automaticamente o [Diário Oficial do Município de Mossoró 
 4. **Gera PDFs** com apenas as páginas do Diário Oficial onde cada ato aparece — sem enviar o documento inteiro.
 5. **Detecta movimentações de pessoal** nas secretarias municipais (nomeações, exonerações, promoções e remanejamentos).
 6. **Envia tudo para um grupo do WhatsApp**:
-   - Mensagem de texto com o resumo das ocorrências
+   - Mensagem de texto com um **resumo por pessoa** (em quais portarias cada nome
+     aparece) seguido dos atos detalhados — vários nomes na mesma portaria são
+     agrupados em um único bloco
    - Os PDFs recortados, todos de uma vez
    - A "Fofoca da Secretaria" com as movimentações de pessoal
 
@@ -78,6 +80,10 @@ NOMES_MONITORADOS=FULANO DE TAL,BELTRANA PEREIRA SOUZA
 # (copie o nome direto do WhatsApp, incluindo emojis se houver)
 WHATSAPP_GRUPO=Nome Do Grupo Aqui
 
+# Grupo de testes — destino das mensagens quando rodar com a flag --test
+# (opcional; se omitido, usa "TESTES SCRIPTs")
+WHATSAPP_GRUPO_TESTE=TESTES SCRIPTs
+
 # Identificação que aparece no cabeçalho de cada mensagem enviada
 NOME_SALA=Minha Equipe
 
@@ -88,7 +94,7 @@ HORARIO_EXECUCAO=05:00
 TIMEOUT_QR_CODE=120
 ```
 
-> **Importante:** o arquivo `.env` nunca é enviado ao GitHub — ele fica apenas no seu computador. Não compartilhe esse arquivo com ninguém.
+> **Importante:** o arquivo `.env` nunca é enviado ao GitHub — ele fica apenas no seu computador. Não compartilhe esse arquivo com ninguém. **Nunca** coloque nomes reais ou o nome do grupo real em arquivos versionados (código, testes, `.env.example`); use apenas dados fictícios.
 
 ---
 
@@ -122,26 +128,61 @@ python monitor_diario_oficial.py --test
 
 Roda uma única vez **reprocessando a edição mais recente** (trata `ULTIMO_DOM_NUMERO` como `0`) e envia as mensagens para o **grupo de testes** definido em `WHATSAPP_GRUPO_TESTE` (padrão: `TESTES SCRIPTs`), sem alterar o controle de edições já monitoradas. Útil para validar o formato das mensagens sem incomodar o grupo real.
 
+O modo de teste difere da execução normal em três pontos:
+
+| | Execução normal | `--test` |
+|---|---|---|
+| Grupo de destino | `WHATSAPP_GRUPO` | `WHATSAPP_GRUPO_TESTE` |
+| Edição reprocessada? | Não (pula se já monitorada) | Sim (ignora `ULTIMO_DOM_NUMERO`) |
+| Atualiza `ULTIMO_DOM_NUMERO` no `.env`? | Sim | Não |
+
+> Para usar, configure `WHATSAPP_GRUPO_TESTE` no `.env` com o nome **exato** do
+> grupo de testes no WhatsApp. Se a variável não existir, o valor padrão
+> `TESTES SCRIPTs` é usado.
+
 ---
 
 ## O que chega no WhatsApp
 
 ### Quando há ocorrências
 
-**1ª mensagem — Resumo das ocorrências:**
+**1ª mensagem — Resumo das ocorrências:** começa com um bloco **RESUMO — POR PESSOA**
+(índice de leitura rápida: em quais portarias cada nome aparece) e, em seguida, traz
+os blocos detalhados de cada portaria. Quando **vários nomes monitorados aparecem na
+mesma portaria**, eles são agrupados em um único bloco, com os nomes separados por `+`.
+
 ```
 📢 MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ
 
 👥 Minha Equipe
 
-📅 Edição: 09/05/2026
+📅 EDIÇÃO Nº 832: 09/05/2026
 🔍 2 ocorrência(s) encontrada(s)
 
+📋 RESUMO — POR PESSOA
+2 nome(s) monitorado(s) encontrado(s)
+
+👤 FULANO DE TAL (2)
+   Portarias: 35, 37
+
+👤 BELTRANA SOUZA (1)
+   Portarias: 35
+
 ━━━━━━━━━━━━━━━━━━
-1. Nome: FULANO DE TAL
+1. Nome: FULANO DE TAL + BELTRANA SOUZA
+Ato: PORTARIA Nº 35, DE 08 DE MAIO DE 2026
+
+(conteúdo completo da portaria...)
+
+━━━━━━━━━━━━━━━━━━
+2. Nome: FULANO DE TAL
 Ato: PORTARIA Nº 37, DE 08 DE MAIO DE 2026
-Ementa: Nomeia servidor...
+
+(conteúdo completo da portaria...)
 ```
+
+> A contagem `🔍 N ocorrência(s)` conta **portarias distintas** (não nomes repetidos):
+> uma portaria com dois nomes monitorados é uma ocorrência.
 
 **2ª mensagem — PDFs** com as páginas exatas de cada portaria (todos os arquivos de uma vez).
 
