@@ -930,19 +930,35 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str, numero: int | None
     """
     Formata a mensagem principal de WhatsApp com as ocorrências encontradas.
     A seção de fofocas é enviada separadamente após os PDFs.
+
+    Quando vários nomes monitorados aparecem na MESMA portaria, eles são
+    agrupados em um único bloco — com todos os nomes no título separados
+    por " + " — em vez de repetir o conteúdo da portaria para cada nome.
     """
     edicao_str = f"📅 EDIÇÃO Nº {numero}: {data_str}" if numero else f"📅 EDIÇÃO: {data_str}"
+
+    # Agrupa ocorrências por portaria (mesma lógica usada na extração de PDFs),
+    # preservando a ordem de primeira aparição e sem repetir nomes.
+    portaria_nomes: dict[str, list[str]] = {}
+    portaria_obj:   dict[str, dict]      = {}
+    for oc in ocorrencias:
+        titulo = oc["portaria"]["titulo"]
+        if titulo not in portaria_nomes:
+            portaria_nomes[titulo] = []
+            portaria_obj[titulo]   = oc["portaria"]
+        if oc["nome"] not in portaria_nomes[titulo]:
+            portaria_nomes[titulo].append(oc["nome"])
+
     linhas = [
         f"📢 *MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ*\n",
         f"👥 *{NOME_SALA}*\n",
         edicao_str,
-        f"🔍 {len(ocorrencias)} ocorrência(s) encontrada(s)\n",
+        f"🔍 {len(portaria_nomes)} ocorrência(s) encontrada(s)\n",
     ]
 
-    for i, ocorrencia in enumerate(ocorrencias, start=1):
-        nome = ocorrencia["nome"]
-        portaria = ocorrencia["portaria"]
-        titulo = portaria["titulo"]
+    for i, (titulo, nomes) in enumerate(portaria_nomes.items(), start=1):
+        portaria = portaria_obj[titulo]
+        nomes_str = " + ".join(nomes)
 
         # Corpo = conteúdo completo sem a primeira linha (título já exibido em *Ato:*)
         linhas_conteudo = portaria["conteudo"].split("\n")
@@ -950,7 +966,7 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str, numero: int | None
 
         linhas += [
             f"━━━━━━━━━━━━━━━━━━",
-            f"*{i}. Nome:* {nome}",
+            f"*{i}. Nome:* {nomes_str}",
             f"*Ato:* {titulo}",
             f"\n{corpo}",
             "",

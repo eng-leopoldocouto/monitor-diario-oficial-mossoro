@@ -817,6 +817,34 @@ class TestFormatarMensagem:
         oc = self._ocorrencia("X", "PORTARIA", "", "Y")
         assert isinstance(monitor.formatar_mensagem([oc], "01/01/2026"), str)
 
+    def test_multiplos_nomes_mesma_portaria_agrupados_em_um_bloco(self):
+        """Vários nomes na mesma portaria viram um único bloco com nomes em ' + '."""
+        oc1 = self._ocorrencia("BEATRIZ ALMEIDA LIMA", "PORTARIA Nº 35,", "", "C.")
+        oc2 = self._ocorrencia("RICARDO GOMES FERREIRA", "PORTARIA Nº 35,", "", "C.")
+        msg = monitor.formatar_mensagem([oc1, oc2], "02/06/2026")
+        assert "BEATRIZ ALMEIDA LIMA + RICARDO GOMES FERREIRA" in msg
+        # Um único bloco → conteúdo da portaria não é repetido
+        assert msg.count("PORTARIA Nº 35,") == 1
+        # Ordem de primeira aparição é preservada
+        assert msg.index("BEATRIZ") < msg.index("RICARDO")
+
+    def test_contagem_reflete_portarias_agrupadas(self):
+        """A contagem do cabeçalho conta portarias distintas, não nomes repetidos."""
+        oc1 = self._ocorrencia("NOME A", "PORTARIA Nº 38,", "", "C.")
+        oc2 = self._ocorrencia("NOME B", "PORTARIA Nº 38,", "", "C.")
+        oc3 = self._ocorrencia("NOME C", "PORTARIA Nº 38,", "", "C.")
+        msg = monitor.formatar_mensagem([oc1, oc2, oc3], "02/06/2026")
+        assert "1 ocorrência(s)" in msg
+        assert "NOME A + NOME B + NOME C" in msg
+
+    def test_nome_repetido_na_mesma_portaria_nao_duplica(self):
+        """O mesmo nome encontrado duas vezes na portaria aparece só uma vez."""
+        oc1 = self._ocorrencia("FULANO", "PORTARIA Nº 10,", "", "C.")
+        oc2 = self._ocorrencia("FULANO", "PORTARIA Nº 10,", "", "C.")
+        msg = monitor.formatar_mensagem([oc1, oc2], "02/06/2026")
+        assert msg.count("FULANO") == 1
+        assert "FULANO + FULANO" not in msg
+
 
 # ══════════════════════════════════════════════════════════════
 # 6. enviar_whatsapp
