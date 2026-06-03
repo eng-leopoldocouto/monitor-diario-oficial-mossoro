@@ -618,7 +618,8 @@ def buscar_nomes_em_portarias(portarias: list[dict], nomes: list[str]) -> list[d
         texto_busca = " ".join(portaria["conteudo"].upper().split())
         for nome in nomes_upper:
             if nome in texto_busca:
-                log.info(f"Nome encontrado: '{nome}' na portaria: {portaria['titulo']}")
+                # debug (não info) para não expor nome (PII) no console
+                log.debug(f"Nome encontrado: '{nome}' na portaria: {portaria['titulo']}")
                 encontrados.append({
                     "nome": nome,
                     "portaria": portaria,
@@ -783,7 +784,8 @@ def detectar_fofocas(portarias: list[dict], secretarias: list[str]) -> list[dict
             if dados:
                 dados["portaria"] = portaria
                 fofocas.append(dados)
-                log.info(
+                # debug (não info) para não expor pessoa (PII) no console
+                log.debug(
                     f"Fofoca detectada: {dados['acao']} — "
                     f"{dados['pessoa']} — {dados['secretaria']}"
                 )
@@ -845,7 +847,8 @@ def promovido_remanejado(fofocas: list[dict]) -> list[dict]:
             "portaria_exon":      exon.get("portaria"),
             "portaria_nom":       nom.get("portaria"),
         })
-        log.info(
+        # debug (não info) para não expor pessoa (PII) no console
+        log.debug(
             f"{acao}: {pessoa} | "
             f"{exon.get('secretaria')} → {nom.get('secretaria')}"
         )
@@ -1041,13 +1044,26 @@ def buscar_url_pdf(url_publicacao: str) -> str | None:
 
     href = link.get("href", "")
     url_pdf = (BASE_URL + href) if href.startswith("/") else href
+
+    # Defesa contra SSRF: só seguimos URLs do próprio domínio do DOM. Se a página
+    # (eventualmente adulterada) apontar para um host externo, recusamos.
+    if not url_pdf.startswith(BASE_URL + "/"):
+        log.warning(f"URL do PDF fora do domínio oficial ({BASE_URL}) — ignorada: {url_pdf}")
+        return None
+
     log.info(f"URL do PDF encontrada: {url_pdf}")
     return url_pdf
 
 
 def _sanitizar_nome_arquivo(nome: str) -> str:
-    """Remove caracteres inválidos para nomes de arquivo no Windows/Linux."""
-    return re.sub(r'[\\/:*?"<>|]', '-', nome).strip(" .")
+    """Remove caracteres inválidos para nomes de arquivo no Windows/Linux.
+
+    Também neutraliza sequências de travessia de diretório (".."), já que o nome
+    deriva de conteúdo externo (título da portaria vindo do site do DOM).
+    """
+    limpo = re.sub(r'[\\/:*?"<>|]', '-', nome)
+    limpo = limpo.replace("..", "-")  # impede travessia de diretório
+    return limpo.strip(" .")
 
 
 def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[str]:
@@ -1161,7 +1177,8 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
 
         paginas_incluidas = sorted(set(paginas_incluidas))
         nomes_log = ", ".join(nomes)
-        log.info(f"Páginas {paginas_incluidas} extraídas para [{nomes_log}].")
+        # debug (não info) para não expor nomes (PII) no console
+        log.debug(f"Páginas {paginas_incluidas} extraídas para [{nomes_log}].")
 
         # Quando o título termina em vírgula e a ementa é a continuação da data
         # ("DE 08 DE MAIO DE 2026"), o DOM separou em duas linhas — junta para o nome.
@@ -1174,7 +1191,8 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
         # Nome do arquivo inclui todos os nomes encontrados na portaria
         nomes_arquivo = " + ".join(nomes)
         nome_arquivo = _sanitizar_nome_arquivo(f"{titulo_arquivo} - {nomes_arquivo}") + ".pdf"
-        caminho_saida = os.path.join(pasta, nome_arquivo)
+        # basename garante que o arquivo nunca escape da pasta de destino
+        caminho_saida = os.path.join(pasta, os.path.basename(nome_arquivo))
         with open(caminho_saida, "wb") as f:
             writer.write(f)
 
@@ -1432,7 +1450,9 @@ def enviar_whatsapp(
     options.add_argument(f"--user-data-dir={WHATSAPP_PROFILE_DIR}")
     options.add_argument("--profile-directory=Default")
     options.add_argument("--remote-allow-origins=*")
-    options.add_argument("--no-sandbox")
+    # NÃO usar --no-sandbox: o sandbox do Chrome é a principal camada de
+    # isolamento contra exploração via conteúdo web. Em desktop comum ele é
+    # desnecessário. Em container, rode como usuário não-root em vez de desligá-lo.
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
 

@@ -114,6 +114,14 @@ O programa fica ativo em segundo plano, executa no horário configurado e aguard
 
 > **Dica para Windows:** use o **Agendador de Tarefas** do Windows para iniciar o script automaticamente no boot da máquina, sem precisar deixar um terminal aberto.
 
+### Modo de teste
+
+```bash
+python monitor_diario_oficial.py --test
+```
+
+Roda uma única vez **reprocessando a edição mais recente** (trata `ULTIMO_DOM_NUMERO` como `0`) e envia as mensagens para o **grupo de testes** definido em `WHATSAPP_GRUPO_TESTE` (padrão: `TESTES SCRIPTs`), sem alterar o controle de edições já monitoradas. Útil para validar o formato das mensagens sem incomodar o grupo real.
+
 ---
 
 ## O que chega no WhatsApp
@@ -177,6 +185,33 @@ Todas podem ser adicionadas ao arquivo `.env`:
 | `WHATSAPP_PROFILE_DIR` | Caminho da pasta onde a sessão do WhatsApp é salva | `.whatsapp_profile/` ao lado do script |
 | `LOG_DIR` | Pasta onde o arquivo de log é gravado | Mesma pasta do script |
 | `PDF_TEMP_DIR` | Pasta onde os PDFs recortados são salvos antes do envio | `pdfs_temporarios/` ao lado do script |
+| `WHATSAPP_GRUPO_TESTE` | Grupo de destino quando rodar com a flag `--test` | `TESTES SCRIPTs` |
+
+---
+
+## Tratamento de dados pessoais (LGPD)
+
+Este projeto trata dados pessoais (nomes de servidores) e, portanto, observa a
+Lei nº 13.709/2018 (LGPD). Resumo do tratamento:
+
+- **Finalidade:** acompanhar atos administrativos publicados no Diário Oficial de
+  Mossoró que citem nomes previamente definidos pelo responsável, para fins de
+  informação interna da equipe.
+- **Origem dos dados:** fonte **pública oficial** (o próprio Diário Oficial do
+  Município), acessada sem autenticação.
+- **Base legal:** dado de acesso público tratado conforme o art. 7º, §3º da LGPD,
+  respeitando boa-fé, finalidade legítima e os direitos do titular.
+- **Destinatários:** apenas os membros do grupo de WhatsApp configurado em
+  `WHATSAPP_GRUPO`. Restrinja esse grupo às pessoas estritamente necessárias.
+- **Armazenamento e retenção:** os dados não são gravados em banco. Há apenas
+  artefatos **locais e temporários**: PDFs em `pdfs_temporarios/` (removidos após
+  o envio) e logs em `monitor_dom.log`. Recomenda-se **expurgar os logs
+  periodicamente** (ex.: a cada 30 dias), pois podem conter nomes.
+- **Dados sensíveis:** o arquivo `.env` (nomes monitorados e grupos) **não é
+  versionado** e não deve ser compartilhado. Nunca inclua nomes reais no código,
+  nos testes ou em qualquer arquivo versionado — use sempre dados fictícios.
+- **Direitos do titular:** solicitações de informação, correção ou exclusão devem
+  ser encaminhadas ao responsável pela operação do monitor.
 
 ---
 
@@ -221,7 +256,7 @@ Todas as dependências são instaladas automaticamente pelo `pip install -r requ
 
 ## Rodando os testes
 
-O projeto possui 115 testes automatizados. Para executá-los:
+O projeto possui 129 testes automatizados. Para executá-los:
 
 ```bash
 pip install pytest
@@ -277,7 +312,7 @@ git checkout -b minha-melhoria
 pytest test_monitor_diario_oficial.py -v
 ```
 
-Todos os 115 testes devem passar antes de abrir o Pull Request. Se você adicionar uma nova funcionalidade, adicione também o teste correspondente.
+Todos os 129 testes devem passar antes de abrir o Pull Request. Se você adicionar uma nova funcionalidade, adicione também o teste correspondente.
 
 ### 4. Envie o Pull Request
 

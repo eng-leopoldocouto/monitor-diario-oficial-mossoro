@@ -5,20 +5,24 @@
 # Docker:    copiado automaticamente pelo Dockerfile
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Versões com piso na release atual (já contém correções de segurança recentes)
+# e teto abaixo da próxima major, evitando puxar uma major futura que possa
+# quebrar o projeto ou ser comprometida. Atualize os pisos periodicamente.
+
 # Requisições HTTP
-requests>=2.31.0
+requests>=2.32.5,<3.0.0
 
 # Parser HTML
-beautifulsoup4>=4.12.0
+beautifulsoup4>=4.14.3,<5.0.0
 
 # Selenium (WebDriver — controla Chrome local ou remoto)
-selenium>=4.18.0
+selenium>=4.43.0,<5.0.0
 
 # Gerenciador automático do ChromeDriver (somente modo local / não-Docker)
-webdriver-manager>=4.0.0
+webdriver-manager>=4.0.2,<5.0.0
 
 # Manipulação e extração de texto de PDFs
-pypdf>=4.0.0
+pypdf>=6.10.2,<7.0.0
 
 # Carregamento automático de variáveis de ambiente do arquivo .env
-python-dotenv>=1.0.0
+python-dotenv>=1.2.2,<2.0.0
