@@ -12,11 +12,13 @@ Ferramenta que lê automaticamente o [Diário Oficial do Município de Mossoró 
 4. **Gera PDFs** com apenas as páginas do Diário Oficial onde cada ato aparece — sem enviar o documento inteiro.
 5. **Detecta movimentações de pessoal** nas secretarias municipais (nomeações, exonerações, promoções e remanejamentos).
 6. **Envia tudo para um grupo do WhatsApp**:
-   - Mensagem de texto com um **resumo por pessoa** (em quais portarias cada nome
-     aparece) seguido dos atos detalhados — vários nomes na mesma portaria são
+   - Mensagem de texto com um **resumo por pessoa** — em cada portaria, a função
+     designada (Gestor / Gestor Substituto / Fiscal / Fiscal Substituto) e o nº do
+     contrato — seguido dos atos detalhados; vários nomes na mesma portaria são
      agrupados em um único bloco
    - Os PDFs recortados, todos de uma vez
-   - A "Fofoca da Secretaria" com as movimentações de pessoal
+   - A "Fofoca da Secretaria" com as movimentações de pessoal e, quando houver,
+     um aviso de **ponto facultativo**
 
 Se nenhum nome for encontrado na edição do dia, o grupo recebe uma mensagem informando que não houve ocorrências.
 
@@ -147,9 +149,11 @@ O modo de teste difere da execução normal em três pontos:
 ### Quando há ocorrências
 
 **1ª mensagem — Resumo das ocorrências:** começa com um bloco **RESUMO — POR PESSOA**
-(índice de leitura rápida: em quais portarias cada nome aparece) e, em seguida, traz
-os blocos detalhados de cada portaria. Quando **vários nomes monitorados aparecem na
-mesma portaria**, eles são agrupados em um único bloco, com os nomes separados por `+`.
+(índice de leitura rápida) e, em seguida, traz os blocos detalhados de cada portaria.
+No resumo, cada portaria aparece com a **função designada** à pessoa — *Gestor*,
+*Gestor Substituto*, *Fiscal* ou *Fiscal Substituto* — e o **nº do contrato**. Quando
+**vários nomes monitorados aparecem na mesma portaria**, eles são agrupados em um único
+bloco detalhado, com os nomes separados por `+`.
 
 ```
 📢 MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ
@@ -163,10 +167,11 @@ mesma portaria**, eles são agrupados em um único bloco, com os nomes separados
 2 nome(s) monitorado(s) encontrado(s)
 
 👤 FULANO DE TAL (2)
-   Portarias: 35, 37
+   • Portaria 35 — Gestor · Contrato 12/2025
+   • Portaria 37 — Gestor Substituto · Contrato 20/2025
 
 👤 BELTRANA SOUZA (1)
-   Portarias: 35
+   • Portaria 35 — Fiscal Substituto · Contrato 12/2025
 
 ━━━━━━━━━━━━━━━━━━
 1. Nome: FULANO DE TAL + BELTRANA SOUZA
@@ -180,6 +185,10 @@ Ato: PORTARIA Nº 37, DE 08 DE MAIO DE 2026
 
 (conteúdo completo da portaria...)
 ```
+
+> A função e o contrato são extraídos do texto da portaria ("...para atuar como
+> *GESTOR DO CONTRATO* n° XX/AAAA..." e "...tendo como *substituto eventual*..."). Se
+> não for possível identificar, mostra `função não identificada`.
 
 > A contagem `🔍 N ocorrência(s)` conta **portarias distintas** (não nomes repetidos):
 > uma portaria com dois nomes monitorados é uma ocorrência.
@@ -200,7 +209,17 @@ Ato: PORTARIA Nº 37, DE 08 DE MAIO DE 2026
 
 🚪 CICLANO SOUZA deixou a casa! Foi EXONERADO(A)
    do cargo de Gerente (CC13) na Secretaria De Obras.
+
+🍹 SEXTOU OFICIAL?
+Saiu no Diário: ponto facultativo na sexta, 21/11/2025! Já pode planejar a folga... 🏖️ (exceto serviços essenciais, claro 😅)
 ```
+
+> **Ponto facultativo:** sempre que a edição traz um decreto declarando *ponto
+> facultativo*, um aviso é anexado ao **final** da Fofoca — mesmo nas edições sem
+> movimentações de pessoal. O programa extrai a data e calcula o dia da semana
+> (manchete adaptável: sexta-feira → *"SEXTOU OFICIAL?"*; demais dias → *"FOLGA À
+> VISTA!"*). Datas diferentes geram avisos separados; se a data não for identificada,
+> exibe um aviso genérico. *(Apenas texto — o PDF do decreto não é anexado.)*
 
 ### Quando não há ocorrências
 
