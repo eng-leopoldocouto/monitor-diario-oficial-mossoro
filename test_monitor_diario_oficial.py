@@ -842,8 +842,59 @@ class TestFormatarMensagem:
         oc1 = self._ocorrencia("FULANO", "PORTARIA Nº 10,", "", "C.")
         oc2 = self._ocorrencia("FULANO", "PORTARIA Nº 10,", "", "C.")
         msg = monitor.formatar_mensagem([oc1, oc2], "02/06/2026")
-        assert msg.count("FULANO") == 1
-        assert "FULANO + FULANO" not in msg
+        assert msg.count("FULANO + FULANO") == 0
+
+    def test_resumo_por_pessoa_aparece_antes_dos_detalhes(self):
+        """O bloco de RESUMO deve vir antes dos blocos detalhados (separadores)."""
+        oc = self._ocorrencia("FULANO", "PORTARIA Nº 31,", "", "C.")
+        msg = monitor.formatar_mensagem([oc], "02/06/2026", 832)
+        assert "RESUMO — POR PESSOA" in msg
+        assert msg.index("RESUMO — POR PESSOA") < msg.index("━")
+
+
+class TestFormatarResumoPorPessoa:
+
+    def _ocorrencia(self, nome, titulo):
+        return {"nome": nome, "portaria": {"titulo": titulo, "ementa": "", "conteudo": "x"}}
+
+    def test_agrupa_portarias_por_pessoa_com_contagem(self):
+        ocs = [
+            self._ocorrencia("RICARDO GOMES FERREIRA", "PORTARIA Nº 31,"),
+            self._ocorrencia("RICARDO GOMES FERREIRA", "PORTARIA Nº 32,"),
+            self._ocorrencia("BEATRIZ ALMEIDA LIMA", "PORTARIA Nº 35,"),
+            self._ocorrencia("RICARDO GOMES FERREIRA", "PORTARIA Nº 35,"),
+        ]
+        resumo = monitor.formatar_resumo_por_pessoa(ocs)
+        assert "👤 *RICARDO GOMES FERREIRA* (3)" in resumo
+        assert "Portarias: 31, 32, 35" in resumo
+        assert "👤 *BEATRIZ ALMEIDA LIMA* (1)" in resumo
+        assert "Portarias: 35" in resumo
+
+    def test_ordem_segue_primeira_aparicao(self):
+        ocs = [
+            self._ocorrencia("RICARDO", "PORTARIA Nº 31,"),
+            self._ocorrencia("BEATRIZ", "PORTARIA Nº 35,"),
+        ]
+        resumo = monitor.formatar_resumo_por_pessoa(ocs)
+        assert resumo.index("RICARDO") < resumo.index("BEATRIZ")
+
+    def test_portaria_repetida_para_mesma_pessoa_nao_duplica(self):
+        ocs = [
+            self._ocorrencia("FULANO", "PORTARIA Nº 38,"),
+            self._ocorrencia("FULANO", "PORTARIA Nº 38,"),
+        ]
+        resumo = monitor.formatar_resumo_por_pessoa(ocs)
+        assert "👤 *FULANO* (1)" in resumo
+        assert "Portarias: 38" in resumo
+
+    def test_conta_nomes_monitorados_no_cabecalho_do_resumo(self):
+        ocs = [
+            self._ocorrencia("A", "PORTARIA Nº 1,"),
+            self._ocorrencia("B", "PORTARIA Nº 1,"),
+            self._ocorrencia("C", "PORTARIA Nº 2,"),
+        ]
+        resumo = monitor.formatar_resumo_por_pessoa(ocs)
+        assert "3 nome(s) monitorado(s) encontrado(s)" in resumo
 
 
 # ══════════════════════════════════════════════════════════════

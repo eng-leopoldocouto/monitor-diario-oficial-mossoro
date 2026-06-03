@@ -59,6 +59,7 @@ except ImportError:
 # Variáveis de ambiente reconhecidas:
 #   NOMES_MONITORADOS    — nomes separados por vírgula (MAIÚSCULAS)          [obrigatório]
 #   WHATSAPP_GRUPO       — nome exato do grupo no WhatsApp                   [obrigatório]
+#   WHATSAPP_GRUPO_TESTE — grupo de testes usado com a flag --test (padrão: "TESTES SCRIPTs") [opcional]
 #   NOME_SALA            — identificação da sala exibida nas mensagens        [obrigatório]
 #   SECRETARIAS_MOSSORO  — secretarias monitoradas, separadas por vírgula    [opcional]
 #   TIMEOUT_QR_CODE      — segundos para escanear o QR code (padrão: 120)   [opcional]
@@ -128,6 +129,10 @@ SECRETARIAS_MOSSORO: list[str] = _ler_lista_env("SECRETARIAS_MOSSORO", _SECRETAR
 # Obrigatórios via .env — não há padrão hardcoded para evitar envio acidental.
 WHATSAPP_GRUPO: str = _ler_env_obrigatorio("WHATSAPP_GRUPO")
 NOME_SALA: str       = _ler_env_obrigatorio("NOME_SALA")
+
+# Grupo de testes — destino das mensagens quando o script roda com a flag --test.
+# Opcional; padrão "TESTES SCRIPTs". Evita enviar testes ao grupo real.
+WHATSAPP_GRUPO_TESTE: str = os.environ.get("WHATSAPP_GRUPO_TESTE", "TESTES SCRIPTs").strip()
 
 # ── Parâmetros operacionais ──────────────────────────────────────────────────
 TIMEOUT_QR_CODE: int = int(os.environ.get("TIMEOUT_QR_CODE", "120"))
@@ -926,10 +931,49 @@ def formatar_fofocas(fofocas: list[dict]) -> str:
     return "\n".join(linhas)
 
 
+def formatar_resumo_por_pessoa(ocorrencias: list[dict]) -> str:
+    """
+    Gera o bloco de RESUMO "por pessoa": para cada nome monitorado encontrado,
+    lista em quais portarias ele aparece, com a contagem de portarias.
+
+    É inserido no topo da mensagem principal, logo abaixo do cabeçalho e antes
+    dos blocos detalhados, funcionando como um índice de leitura rápida.
+
+    A ordem das pessoas e das portarias segue a primeira aparição nas
+    ocorrências; portarias repetidas para a mesma pessoa não são duplicadas.
+    """
+    # Mapeia pessoa → referências de portaria (número quando disponível, senão o
+    # título completo), preservando ordem de aparição e sem repetir.
+    pessoa_portarias: dict[str, list[str]] = {}
+    for oc in ocorrencias:
+        nome = oc["nome"]
+        titulo = oc["portaria"]["titulo"]
+        m = re.search(r'N[ºo°]\s*(\d+)', titulo)
+        ref = m.group(1) if m else titulo
+        pessoa_portarias.setdefault(nome, [])
+        if ref not in pessoa_portarias[nome]:
+            pessoa_portarias[nome].append(ref)
+
+    linhas = [
+        "📋 *RESUMO — POR PESSOA*",
+        f"_{len(pessoa_portarias)} nome(s) monitorado(s) encontrado(s)_",
+        "",
+    ]
+    for nome, refs in pessoa_portarias.items():
+        linhas.append(f"👤 *{nome}* ({len(refs)})")
+        linhas.append(f"   Portarias: {', '.join(refs)}")
+        linhas.append("")
+
+    return "\n".join(linhas)
+
+
 def formatar_mensagem(ocorrencias: list[dict], data_str: str, numero: int | None = None) -> str:
     """
     Formata a mensagem principal de WhatsApp com as ocorrências encontradas.
     A seção de fofocas é enviada separadamente após os PDFs.
+
+    A mensagem começa com um bloco de RESUMO por pessoa (índice de leitura
+    rápida) e, em seguida, traz os blocos detalhados de cada portaria.
 
     Quando vários nomes monitorados aparecem na MESMA portaria, eles são
     agrupados em um único bloco — com todos os nomes no título separados
@@ -954,6 +998,7 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str, numero: int | None
         f"👥 *{NOME_SALA}*\n",
         edicao_str,
         f"🔍 {len(portaria_nomes)} ocorrência(s) encontrada(s)\n",
+        formatar_resumo_por_pessoa(ocorrencias),
     ]
 
     for i, (titulo, nomes) in enumerate(portaria_nomes.items(), start=1):
@@ -1564,10 +1609,15 @@ def enviar_whatsapp(
 # EXECUÇÃO PRINCIPAL
 # ─────────────────────────────────────────────
 
-def main():
+def main(modo_teste: bool = False):
     log.info("=" * 60)
     log.info("Iniciando monitoramento do Diário Oficial de Mossoró")
+    if modo_teste:
+        log.info(f"MODO TESTE ativo — destino: grupo '{WHATSAPP_GRUPO_TESTE}'")
     log.info("=" * 60)
+
+    # Em modo teste, as mensagens vão para o grupo de testes, não para o grupo real.
+    grupo_destino = WHATSAPP_GRUPO_TESTE if modo_teste else WHATSAPP_GRUPO
 
     # 1. Busca a publicação mais recente (primeiro card do site)
     publicacao = buscar_ultima_publicacao()
@@ -1576,9 +1626,11 @@ def main():
         log.warning("Não foi possível obter a última edição do DOM. Encerrando.")
         return
 
-    # 2. Verifica se a edição já foi monitorada (evita reprocessar a mesma edição)
+    # 2. Verifica se a edição já foi monitorada (evita reprocessar a mesma edição).
+    #    Em modo teste, trata ULTIMO_DOM_NUMERO como 0 para sempre reprocessar a
+    #    edição mais recente, mesmo que já tenha sido monitorada.
     numero_atual = publicacao.get("numero")
-    ultimo_salvo = int(os.environ.get("ULTIMO_DOM_NUMERO", "0"))
+    ultimo_salvo = 0 if modo_teste else int(os.environ.get("ULTIMO_DOM_NUMERO", "0"))
     if numero_atual is not None and numero_atual <= ultimo_salvo:
         log.info(
             f"Edição Nº {numero_atual} já foi monitorada "
@@ -1586,8 +1638,9 @@ def main():
         )
         return
 
-    # 2a. Persiste o número da edição atual no .env para evitar reprocessamento futuro
-    if numero_atual is not None:
+    # 2a. Persiste o número da edição atual no .env para evitar reprocessamento futuro.
+    #     Em modo teste NÃO persiste, para não interferir no rastreamento real.
+    if numero_atual is not None and not modo_teste:
         _atualizar_env("ULTIMO_DOM_NUMERO", str(numero_atual))
 
     # 3. Extrai os atos (portarias, decretos, etc.) da publicação
@@ -1623,7 +1676,7 @@ def main():
             f"❌ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."
         )
         # Fofoca enviada como segunda mensagem, mesmo sem PDFs
-        enviar_whatsapp(mensagem_vazia, WHATSAPP_GRUPO, mensagem_apos_pdf=secao_fofoca)
+        enviar_whatsapp(mensagem_vazia, grupo_destino, mensagem_apos_pdf=secao_fofoca)
         return
 
     log.info(f"{len(ocorrencias)} ocorrência(s) encontrada(s). Preparando envio...")
@@ -1642,7 +1695,7 @@ def main():
         log.warning("PDF não encontrado — apenas a mensagem de texto será enviada.")
 
     # 7. Envia: (1) mensagem principal, (2) PDFs, (3) fofoca — tudo na mesma sessão
-    sucesso = enviar_whatsapp(mensagem, WHATSAPP_GRUPO, caminhos_pdf, mensagem_apos_pdf=secao_fofoca)
+    sucesso = enviar_whatsapp(mensagem, grupo_destino, caminhos_pdf, mensagem_apos_pdf=secao_fofoca)
 
     # 8. Remove os PDFs temporários após envio
     for caminho in caminhos_pdf:
@@ -1699,12 +1752,19 @@ def _agendar_execucao(horario: str) -> None:
 
 
 if __name__ == "__main__":
+    # ── Modo teste ────────────────────────────────────────────────────────────
+    # Acionado por: python monitor_diario_oficial.py --test
+    # Roda uma vez tratando ULTIMO_DOM_NUMERO como 0 (sempre reprocessa a edição
+    # mais recente) e envia as mensagens para o grupo de testes
+    # (WHATSAPP_GRUPO_TESTE), sem alterar o rastreamento real no .env.
+    if "--test" in sys.argv:
+        main(modo_teste=True)
     # ── Modo agendado (execução contínua) ────────────────────────────────────
     # Acionado APENAS por: python monitor_diario_oficial.py --agendar
     # HORARIO_EXECUCAO define o horário, mas NÃO ativa o modo sozinho.
     # Agendamento externo (Claude Routines, Task Scheduler, cron):
     #   → execute sem --agendar; o script roda uma vez e encerra.
-    if "--agendar" in sys.argv:
+    elif "--agendar" in sys.argv:
         horario = os.environ.get("HORARIO_EXECUCAO", "05:00").strip()
         _agendar_execucao(horario)
     else:
