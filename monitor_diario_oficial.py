@@ -558,7 +558,10 @@ def extrair_portarias(url_html: str) -> list[dict]:
 
     # Padrões de início de ato para identificar o título dentro de cada bloco
     padroes_ato = re.compile(
-        r"(?:PORTARIA|DECRETO|LEI|RESOLUÇÃO|RESOLUCAO|ATO|TERMO|EXTRATO|AVISO|EDITAL)"
+        r"(?:PORTARIA|DECRETO|LEI|RESOLUÇÃO|RESOLUCAO|ATO|TERMO|EXTRATO|AVISO|EDITAL"
+        r"|LICITAÇÃO|LICITACAO|RETIFICAÇÃO|RETIFICACAO|RESULTADO"
+        r"|PROGRAMAÇÃO|PROGRAMACAO|TRIBUNAL|NOTIFICAÇÃO|NOTIFICACAO"
+        r"|ACÓRDÃO|ACORDAO|REGULAMENTO|JUSTIFICATIVA)"
         r"[^\n]{0,200}",
         re.IGNORECASE,
     )
