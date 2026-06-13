@@ -1689,6 +1689,59 @@ def enviar_whatsapp(
         except Exception:
             log.info("Sem diálogo de conflito de sessão.")
 
+        # Detecta e fecha o pop-up de novidades/atualizações do WhatsApp
+        # (ex.: "Novidades", "Continuar", "Atualização disponível"). Aparece
+        # apenas de vez em quando, sobreposto à interface, e bloqueia a busca
+        # do grupo se não for dispensado. Tudo aqui é best-effort: se não houver
+        # pop-up, seguimos normalmente.
+        #
+        # Para não atrasar a execução normal (sem pop-up), primeiro checamos
+        # rapidamente se há algum diálogo na tela; só então tentamos fechá-lo.
+        try:
+            WebDriverWait(driver, 3).until(
+                EC.presence_of_element_located((By.XPATH, '//div[@role="dialog"]'))
+            )
+            log.info("Diálogo sobreposto detectado — tentando fechar (pop-up de novidades).")
+            botoes_fechar_popup = [
+                # Botões de ação do diálogo de novidades
+                '//div[@role="dialog"]//button[contains(normalize-space(),"Continuar")]',
+                '//div[@role="dialog"]//button[contains(normalize-space(),"Continue")]',
+                '//div[@role="dialog"]//button[contains(normalize-space(),"Entendi")]',
+                '//div[@role="dialog"]//button[contains(normalize-space(),"OK")]',
+                '//div[@role="dialog"]//button[contains(normalize-space(),"Ok")]',
+                '//div[@role="dialog"]//button[contains(normalize-space(),"Agora não")]',
+                '//div[@role="dialog"]//button[contains(normalize-space(),"Not now")]',
+                # Botão "X" de fechar do diálogo
+                '//div[@role="dialog"]//button[@aria-label="Fechar"]',
+                '//div[@role="dialog"]//button[@aria-label="Close"]',
+                '//div[@role="dialog"]//div[@aria-label="Fechar"]',
+                '//div[@role="dialog"]//div[@aria-label="Close"]',
+            ]
+            for xpath in botoes_fechar_popup:
+                try:
+                    botao = WebDriverWait(driver, 2).until(
+                        EC.element_to_be_clickable((By.XPATH, xpath))
+                    )
+                    log.info(f"Fechando pop-up via: {xpath}")
+                    botao.click()
+                    time.sleep(1)
+                    break
+                except Exception:
+                    continue
+            else:
+                # Nenhum botão conhecido funcionou; tenta dispensar com ESC
+                log.warning(
+                    "Diálogo detectado mas nenhum botão de fechar conhecido funcionou — "
+                    "tentando tecla ESC."
+                )
+                try:
+                    webdriver.ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+                    time.sleep(1)
+                except Exception:
+                    log.warning("Não foi possível fechar o diálogo automaticamente.")
+        except Exception:
+            log.info("Sem pop-up de novidades.")
+
         # Aguarda a caixa de pesquisa estar disponível
         # NOTA: no WhatsApp Web atual a caixa é <input data-tab="3">, não div[contenteditable]
         xpaths_pesquisa = [
