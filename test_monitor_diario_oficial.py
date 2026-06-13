@@ -204,10 +204,11 @@ def _setup_selenium_mocks(mock_chrome_class, mock_wait_class):
     O novo código cria WebDriverWait dentro de loops, então todas as chamadas
     retornam a mesma instância mock. A sequência de .until() é:
       1. QR code check          → SeleniumTimeoutException (sem QR, sessão ativa)
-      2. Interface pronta loop  → retorna MagicMock (detecta sidebar na 1ª tentativa)
-      3. Search box loop        → retorna caixa_pesquisa (1ª tentativa de XPath)
-      4. Resultado grupo        → retorna resultado_grupo
-      5. Message box loop       → retorna caixa_msg (1ª tentativa de XPath)
+      2. Diálogo "usar janela"  → SeleniumTimeoutException (sem conflito)
+      3. Pop-up de novidades    → SeleniumTimeoutException (sem pop-up, caso comum)
+      4. Search box loop        → retorna caixa_pesquisa (1ª tentativa de XPath)
+      5. Resultado grupo        → retorna resultado_grupo
+      6. Message box loop       → retorna caixa_msg (1ª tentativa de XPath)
     """
     mock_driver = MagicMock()
     mock_chrome_class.return_value = mock_driver
@@ -224,6 +225,7 @@ def _setup_selenium_mocks(mock_chrome_class, mock_wait_class):
     mock_wait_inst.until.side_effect = [
         SeleniumTimeoutException(),  # QR code não encontrado → sessão ativa
         SeleniumTimeoutException(),  # diálogo "usar nesta janela" não encontrado
+        SeleniumTimeoutException(),  # pop-up de novidades não presente (caso comum)
         mock_caixa_pesquisa,         # search box encontrada no 1º XPath (input[@data-tab="3"])
         mock_resultado_grupo,        # grupo encontrado
         mock_caixa_msg,              # caixa de mensagem encontrada no 1º XPath
@@ -1113,6 +1115,44 @@ class TestEnviarWhatsapp:
         monitor.enviar_whatsapp("Mensagem", "Grupo")
 
         mock_driver.get.assert_called_once_with("https://web.whatsapp.com")
+
+    @_aplicar_patches
+    def test_fecha_popup_novidades_quando_presente(
+        self, mock_chrome, mock_wait, mock_service, mock_cdm, mock_isdir, mock_sleep, mock_colar
+    ):
+        """
+        Quando o pop-up "Novidades do WhatsApp Web" aparece após o login, ele deve
+        ser fechado (clique no botão) antes de pesquisar o grupo, sem interromper o
+        fluxo. Simula o diálogo presente: a checagem de presença retorna um mock e o
+        primeiro botão de fechar é clicável.
+        """
+        mock_isdir.return_value = True
+        mock_driver = MagicMock()
+        mock_chrome.return_value = mock_driver
+        mock_driver.execute_script.return_value = []
+
+        mock_wait_inst = MagicMock()
+        mock_wait.return_value = mock_wait_inst
+
+        mock_popup_btn = MagicMock()
+        mock_caixa_pesquisa = MagicMock()
+        mock_resultado_grupo = MagicMock()
+        mock_caixa_msg = MagicMock()
+
+        mock_wait_inst.until.side_effect = [
+            SeleniumTimeoutException(),  # QR ausente → sessão ativa
+            SeleniumTimeoutException(),  # sem diálogo "usar nesta janela"
+            MagicMock(),                 # presence_of //div[@role="dialog"] → pop-up presente
+            mock_popup_btn,              # 1º botão de fechar conhecido é clicável
+            mock_caixa_pesquisa,         # caixa de pesquisa
+            mock_resultado_grupo,        # grupo encontrado
+            mock_caixa_msg,              # caixa de mensagem
+        ]
+
+        resultado = monitor.enviar_whatsapp("Mensagem", "Grupo")
+
+        assert resultado is True
+        mock_popup_btn.click.assert_called_once()
 
 
 # ══════════════════════════════════════════════════════════════
