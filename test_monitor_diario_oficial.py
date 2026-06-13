@@ -70,6 +70,40 @@ HTML_EDICOES_TODAS_MAIS_NOVAS = """
 
 HTML_EDICOES_VAZIA = "<html><body></body></html>"
 
+# Listagem no formato REAL do site (texto do card: "DD/MM/AAAA DOM Nº NNN"),
+# em ordem decrescente por número — como observado em /dom/edicoes.
+HTML_EDICOES_POR_NUMERO = """
+<html><body>
+  <div class="card">
+    <span>13/06/2026 DOM Nº 840</span>
+    <a href="/dom/publicacao/1875">Ver publicação</a>
+  </div>
+  <div class="card">
+    <span>12/06/2026 DOM Nº 839</span>
+    <a href="/dom/publicacao/1874">Ver publicação</a>
+  </div>
+  <div class="card">
+    <span>11/06/2026 DOM Nº 838</span>
+    <a href="/dom/publicacao/1873">Ver publicação</a>
+  </div>
+</body></html>
+"""
+
+# Listagem com LACUNA: número 839 ausente (pula de 840 para 838). Usada para
+# validar a parada antecipada quando a listagem decrescente passa do alvo.
+HTML_EDICOES_NUMERO_COM_LACUNA = """
+<html><body>
+  <div class="card">
+    <span>13/06/2026 DOM Nº 840</span>
+    <a href="/dom/publicacao/1875">Ver publicação</a>
+  </div>
+  <div class="card">
+    <span>11/06/2026 DOM Nº 838</span>
+    <a href="/dom/publicacao/1873">Ver publicação</a>
+  </div>
+</body></html>
+"""
+
 HTML_PUBLICACAO = """
 <html><body>
 <div id="main-content">
@@ -1795,3 +1829,93 @@ class TestPontoFacultativo:
     def test_fofoca_sem_ponto_facultativo_nao_menciona(self):
         msg = monitor.formatar_fofocas([])
         assert "ponto facultativo" not in msg.lower()
+
+
+# ══════════════════════════════════════════════════════════════
+# 9. buscar_publicacao_por_numero
+# ══════════════════════════════════════════════════════════════
+
+class TestBuscarPublicacaoPorNumero:
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_encontra_edicao_pelo_numero(self, mock_get):
+        mock_get.return_value = _mock_resposta_http(HTML_EDICOES_POR_NUMERO)
+
+        resultado = monitor.buscar_publicacao_por_numero(839)
+
+        assert resultado is not None
+        assert resultado["id"] == "1874"
+        assert resultado["url_html"] == "https://dom.mossoro.rn.gov.br/dom/publicacao/1874"
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_retorna_numero_e_data(self, mock_get):
+        mock_get.return_value = _mock_resposta_http(HTML_EDICOES_POR_NUMERO)
+
+        resultado = monitor.buscar_publicacao_por_numero(839)
+
+        assert resultado["numero"] == 839
+        assert resultado["data"] == "12/06/2026"
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_para_quando_listagem_passa_do_alvo(self, mock_get):
+        """839 ausente (lacuna 840→838): a listagem decrescente passa do alvo → None."""
+        mock_get.return_value = _mock_resposta_http(HTML_EDICOES_NUMERO_COM_LACUNA)
+
+        resultado = monitor.buscar_publicacao_por_numero(839)
+
+        assert resultado is None
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_retorna_none_em_pagina_vazia(self, mock_get):
+        mock_get.return_value = _mock_resposta_http(HTML_EDICOES_VAZIA)
+
+        assert monitor.buscar_publicacao_por_numero(839) is None
+
+    @patch("monitor_diario_oficial.requests.get")
+    def test_retorna_none_em_erro_de_rede(self, mock_get):
+        import requests as req_lib
+        mock_get.side_effect = req_lib.RequestException("timeout")
+
+        assert monitor.buscar_publicacao_por_numero(839) is None
+
+
+# ══════════════════════════════════════════════════════════════
+# 10. main() — roteamento por número de edição escolhido
+# ══════════════════════════════════════════════════════════════
+
+class TestMainRoteamento:
+
+    def test_usa_busca_por_numero_quando_informado(self):
+        """Com numero_diario, main deve buscar a edição por número (não a última)."""
+        with patch("monitor_diario_oficial.buscar_publicacao_por_numero", return_value=None) as m_num, \
+             patch("monitor_diario_oficial.buscar_ultima_publicacao") as m_ult:
+            monitor.main(modo_teste=True, numero_diario=839)
+        m_num.assert_called_once_with(839)
+        m_ult.assert_not_called()
+
+    def test_usa_ultima_publicacao_sem_numero(self):
+        """Sem numero_diario, mantém o comportamento atual (última edição)."""
+        with patch("monitor_diario_oficial.buscar_ultima_publicacao", return_value=None) as m_ult, \
+             patch("monitor_diario_oficial.buscar_publicacao_por_numero") as m_num:
+            monitor.main(modo_teste=True)
+        m_ult.assert_called_once()
+        m_num.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════
+# 11. _extrair_numero_teste — número que segue a flag --test
+# ══════════════════════════════════════════════════════════════
+
+class TestExtrairNumeroTeste:
+
+    def test_numero_apos_test(self):
+        assert monitor._extrair_numero_teste(["prog", "--test", "839"]) == 839
+
+    def test_test_sem_numero_retorna_none(self):
+        assert monitor._extrair_numero_teste(["prog", "--test"]) is None
+
+    def test_test_seguido_de_outra_flag_retorna_none(self):
+        assert monitor._extrair_numero_teste(["prog", "--test", "--agendar"]) is None
+
+    def test_sem_flag_test_retorna_none(self):
+        assert monitor._extrair_numero_teste(["prog"]) is None

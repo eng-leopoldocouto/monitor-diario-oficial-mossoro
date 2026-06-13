@@ -130,6 +130,16 @@ python monitor_diario_oficial.py --test
 
 Roda uma única vez **reprocessando a edição mais recente** (trata `ULTIMO_DOM_NUMERO` como `0`) e envia as mensagens para o **grupo de testes** definido em `WHATSAPP_GRUPO_TESTE` (padrão: `TESTES SCRIPTs`), sem alterar o controle de edições já monitoradas. Útil para validar o formato das mensagens sem incomodar o grupo real.
 
+#### Testar uma edição específica
+
+Para testar uma edição que **não** é a mais recente, informe o número do DOM logo após `--test`:
+
+```bash
+python monitor_diario_oficial.py --test 839
+```
+
+O script procura na listagem do site a edição `DOM Nº 839`, resolve a URL correta da publicação e processa essa edição (enviando ao grupo de testes, como qualquer `--test`). Se o número não existir, o script avisa e encerra sem enviar nada.
+
 O modo de teste difere da execução normal em três pontos:
 
 | | Execução normal | `--test` |

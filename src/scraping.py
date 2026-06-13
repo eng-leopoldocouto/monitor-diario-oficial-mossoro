@@ -151,6 +151,74 @@ def buscar_ultima_publicacao() -> dict | None:
     return {"id": pub_id, "numero": numero, "data": data_str, "url_html": url_html}
 
 
+def buscar_publicacao_por_numero(numero: int) -> dict | None:
+    """
+    Procura na listagem de edições a publicação cujo número da edição
+    (ex.: "DOM Nº 839") seja igual a `numero` e retorna seus dados.
+
+    Pagina /dom/edicoes (listagem decrescente por número) lendo, em cada card,
+    o número da edição, o id da publicação e a data. Retorna o mesmo formato
+    de buscar_ultima_publicacao:
+        {id, numero, data, url_html}
+
+    Retorna None se: o número não existir (a listagem decrescente passou do
+    alvo — caso de lacuna), a página vier vazia, ou ocorrer erro de rede.
+    """
+    log.info(f"Buscando edição do DOM número: {numero}")
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; DOM-Monitor/1.0)"}
+
+    pagina = 1
+    while True:
+        url = f"{BASE_URL}/dom/edicoes?page={pagina}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            log.error(f"Erro ao acessar lista de edições: {e}")
+            return None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        cards = soup.select("a[href^='/dom/publicacao/']")
+
+        if not cards:
+            log.warning("Nenhuma edição encontrada na página — encerrando busca.")
+            return None
+
+        for card in cards:
+            href = card.get("href", "")
+            match = re.search(r"/dom/publicacao/(\d+)", href)
+            if not match:
+                continue
+            pub_id = match.group(1)
+
+            parent = card.find_parent()
+            texto = parent.get_text(" ", strip=True) if parent else ""
+            num_match = re.search(r"DOM\s+N[ºo°]?\s*(\d+)", texto, re.IGNORECASE)
+            if not num_match:
+                continue
+            num_card = int(num_match.group(1))
+
+            if num_card == numero:
+                date_match = re.search(r"(\d{2}/\d{2}/\d{4})", texto)
+                data_str = date_match.group(1) if date_match else "data desconhecida"
+                url_html = f"{BASE_URL}/dom/publicacao/{pub_id}"
+                log.info(f"Edição Nº {numero} encontrada: ID {pub_id} — {url_html}")
+                return {"id": pub_id, "numero": num_card, "data": data_str, "url_html": url_html}
+
+            # Listagem é decrescente: se já passou do alvo, a edição não existe.
+            if num_card < numero:
+                log.info(
+                    f"Edição Nº {numero} não encontrada "
+                    f"(listagem já passou para Nº {num_card})."
+                )
+                return None
+
+        pagina += 1
+        if pagina > 20:  # Proteção contra loop infinito
+            log.warning("Limite de páginas atingido sem encontrar o número.")
+            return None
+
+
 def extrair_portarias(url_html: str) -> list[dict]:
     """
     Acessa a página HTML da publicação e extrai todas as portarias.

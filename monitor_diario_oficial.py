@@ -43,7 +43,7 @@ from src.config import (  # noqa: F401
 )
 from src.scraping import (  # noqa: F401
     obter_data_anterior, buscar_publicacao_por_data,
-    buscar_ultima_publicacao, extrair_portarias,
+    buscar_ultima_publicacao, buscar_publicacao_por_numero, extrair_portarias,
 )
 from src.parsing import (  # noqa: F401
     buscar_nomes_em_portarias, _extrair_dados_fofoca, detectar_fofocas,
@@ -59,22 +59,29 @@ from src.whatsapp import (  # noqa: F401
 )
 
 
-def main(modo_teste: bool = False):
+def main(modo_teste: bool = False, numero_diario: int | None = None):
     log.info("=" * 60)
     log.info("Iniciando monitoramento do Diário Oficial de Mossoró")
     if modo_teste:
         log.info(f"MODO TESTE ativo — destino: grupo '{WHATSAPP_GRUPO_TESTE}'")
+    if numero_diario is not None:
+        log.info(f"Edição escolhida para teste: DOM Nº {numero_diario}")
     log.info("=" * 60)
 
     # Em modo teste, as mensagens vão para o grupo de testes, não para o grupo real.
     grupo_destino = WHATSAPP_GRUPO_TESTE if modo_teste else WHATSAPP_GRUPO
 
-    # 1. Busca a publicação mais recente (primeiro card do site)
-    publicacao = buscar_ultima_publicacao()
-
-    if not publicacao:
-        log.warning("Não foi possível obter a última edição do DOM. Encerrando.")
-        return
+    # 1. Obtém a publicação: por número escolhido (teste) ou a mais recente.
+    if numero_diario is not None:
+        publicacao = buscar_publicacao_por_numero(numero_diario)
+        if not publicacao:
+            log.warning(f"Edição Nº {numero_diario} não encontrada no DOM. Encerrando.")
+            return
+    else:
+        publicacao = buscar_ultima_publicacao()
+        if not publicacao:
+            log.warning("Não foi possível obter a última edição do DOM. Encerrando.")
+            return
 
     # 2. Verifica se a edição já foi monitorada (evita reprocessar a mesma edição).
     #    Em modo teste, trata ULTIMO_DOM_NUMERO como 0 para sempre reprocessar a
@@ -205,14 +212,31 @@ def _agendar_execucao(horario: str) -> None:
         main()
 
 
+def _extrair_numero_teste(argv: list[str]) -> int | None:
+    """
+    Retorna o número da edição informado logo após a flag --test, se houver.
+
+    Ex.: ["prog", "--test", "839"] → 839
+         ["prog", "--test"]        → None  (usa a edição mais recente)
+         ["prog", "--test", "--x"] → None  (token seguinte não é número)
+    """
+    if "--test" not in argv:
+        return None
+    idx = argv.index("--test")
+    if idx + 1 < len(argv) and argv[idx + 1].isdigit():
+        return int(argv[idx + 1])
+    return None
+
+
 if __name__ == "__main__":
     # ── Modo teste ────────────────────────────────────────────────────────────
-    # Acionado por: python monitor_diario_oficial.py --test
-    # Roda uma vez tratando ULTIMO_DOM_NUMERO como 0 (sempre reprocessa a edição
-    # mais recente) e envia as mensagens para o grupo de testes
-    # (WHATSAPP_GRUPO_TESTE), sem alterar o rastreamento real no .env.
+    # Acionado por: python monitor_diario_oficial.py --test [NÚMERO]
+    # Sem número → edição mais recente. Com número (ex.: --test 839) → busca essa
+    # edição específica pelo nº do DOM. Em ambos: trata ULTIMO_DOM_NUMERO como 0
+    # (sempre reprocessa) e envia ao grupo de testes (WHATSAPP_GRUPO_TESTE), sem
+    # alterar o rastreamento real no .env.
     if "--test" in sys.argv:
-        main(modo_teste=True)
+        main(modo_teste=True, numero_diario=_extrair_numero_teste(sys.argv))
     # ── Modo agendado (execução contínua) ────────────────────────────────────
     # Acionado APENAS por: python monitor_diario_oficial.py --agendar
     # HORARIO_EXECUCAO define o horário, mas NÃO ativa o modo sozinho.
