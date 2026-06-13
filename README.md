@@ -279,13 +279,22 @@ Lei nº 13.709/2018 (LGPD). Resumo do tratamento:
 
 ```
 monitor-diario-oficial-mossoro/
-├── monitor_diario_oficial.py   # Script principal
+├── monitor_diario_oficial.py   # Ponto de entrada — orquestra os módulos do src/
+├── src/                        # Código organizado por responsabilidade
+│   ├── config.py               # Variáveis de ambiente, constantes e logging
+│   ├── scraping.py             # Busca de edições e extração de atos do site
+│   ├── parsing.py              # Portarias, fofocas, ponto facultativo e mensagens
+│   ├── pdf.py                  # Download e fatiamento de PDFs por ocorrência
+│   └── whatsapp.py             # Envio de mensagens e arquivos via WhatsApp Web
 ├── test_monitor_diario_oficial.py  # Testes automatizados
 ├── requirements.txt            # Dependências Python
 ├── .env.example                # Modelo de configuração (versão pública)
 ├── .env                        # Sua configuração real (não versionado)
 └── .gitignore                  # Arquivos ignorados pelo Git
 ```
+
+O comando de execução não muda: `monitor_diario_oficial.py` continua sendo o
+ponto de entrada e reexporta toda a API pública dos módulos em `src/`.
 
 Pastas criadas automaticamente durante o uso:
 

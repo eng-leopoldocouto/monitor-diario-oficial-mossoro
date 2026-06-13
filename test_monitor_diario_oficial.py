@@ -252,7 +252,7 @@ class TestObterDataAnterior:
 
     def test_retorna_dia_anterior(self):
         """Deve retornar exatamente o dia anterior à data mockada."""
-        with patch("monitor_diario_oficial.datetime") as mock_dt:
+        with patch("monitor_diario_oficial.scraping.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2026, 5, 7, 12, 0, 0)
             mock_dt.strptime.side_effect = datetime.strptime
             resultado = monitor.obter_data_anterior()
@@ -260,7 +260,7 @@ class TestObterDataAnterior:
 
     def test_virada_de_mes(self):
         """Deve calcular corretamente o último dia do mês anterior."""
-        with patch("monitor_diario_oficial.datetime") as mock_dt:
+        with patch("monitor_diario_oficial.scraping.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 1, 8, 0, 0)
             mock_dt.strptime.side_effect = datetime.strptime
             resultado = monitor.obter_data_anterior()
@@ -268,7 +268,7 @@ class TestObterDataAnterior:
 
     def test_virada_de_ano(self):
         """Deve calcular corretamente 31/12 quando hoje é 01/01."""
-        with patch("monitor_diario_oficial.datetime") as mock_dt:
+        with patch("monitor_diario_oficial.scraping.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2026, 1, 1, 0, 0, 0)
             mock_dt.strptime.side_effect = datetime.strptime
             resultado = monitor.obter_data_anterior()
@@ -276,7 +276,7 @@ class TestObterDataAnterior:
 
     def test_dia_com_zero_a_esquerda(self):
         """Dias de 1 a 9 devem ter zero à esquerda (ex: 06, não 6)."""
-        with patch("monitor_diario_oficial.datetime") as mock_dt:
+        with patch("monitor_diario_oficial.scraping.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2026, 5, 8, 10, 0, 0)
             mock_dt.strptime.side_effect = datetime.strptime
             resultado = monitor.obter_data_anterior()
@@ -965,13 +965,13 @@ class TestExtrairFuncaoContrato:
 # Aplicados em ordem: o 1º da lista vira o mais interno → 1º parâmetro da função.
 # Ordem dos parâmetros: mock_chrome, mock_wait, mock_service, mock_cdm, mock_isdir, mock_sleep
 _PATCHES_SELENIUM = [
-    patch("monitor_diario_oficial.webdriver.Chrome"),       # innermost → mock_chrome (1º)
-    patch("monitor_diario_oficial.WebDriverWait"),          # → mock_wait
-    patch("monitor_diario_oficial.Service"),                # → mock_service
-    patch("monitor_diario_oficial.ChromeDriverManager"),    # → mock_cdm
-    patch("monitor_diario_oficial.os.path.isdir"),          # → mock_isdir
-    patch("monitor_diario_oficial.time.sleep"),             # → mock_sleep
-    patch("monitor_diario_oficial._colar_no_elemento"),     # outermost → mock_colar (último)
+    patch("monitor_diario_oficial.webdriver.Chrome"),            # innermost → mock_chrome (1º)
+    patch("monitor_diario_oficial.whatsapp.WebDriverWait"),      # → mock_wait
+    patch("monitor_diario_oficial.whatsapp.Service"),            # → mock_service
+    patch("monitor_diario_oficial.whatsapp.ChromeDriverManager"),# → mock_cdm
+    patch("monitor_diario_oficial.os.path.isdir"),               # → mock_isdir
+    patch("monitor_diario_oficial.time.sleep"),                  # → mock_sleep
+    patch("monitor_diario_oficial.whatsapp._colar_no_elemento"), # outermost → mock_colar (último)
 ]
 
 
@@ -1183,7 +1183,7 @@ class TestEnviarArquivoNoGrupo:
 
     @patch("monitor_diario_oficial.os.path.isfile", return_value=True)
     @patch("monitor_diario_oficial.time.sleep")
-    @patch("monitor_diario_oficial.WebDriverWait")
+    @patch("monitor_diario_oficial.whatsapp.WebDriverWait")
     def test_click_chamado_quando_xpath_encontra_botao(self, mock_wait_cls, mock_sleep, mock_isfile):
         """
         Caminho feliz: clipe → Documentos → botão enviar clicado.
@@ -1211,7 +1211,7 @@ class TestEnviarArquivoNoGrupo:
 
     @patch("monitor_diario_oficial.os.path.isfile", return_value=True)
     @patch("monitor_diario_oficial.time.sleep")
-    @patch("monitor_diario_oficial.WebDriverWait")
+    @patch("monitor_diario_oficial.whatsapp.WebDriverWait")
     def test_javascript_fallback_chamado_quando_xpath_falha(self, mock_wait_cls, mock_sleep, mock_isfile):
         """
         XPath não encontra o botão de envio → fallback JavaScript DEVE ser
@@ -1238,7 +1238,7 @@ class TestEnviarArquivoNoGrupo:
 
     @patch("monitor_diario_oficial.os.path.isfile", return_value=True)
     @patch("monitor_diario_oficial.time.sleep")
-    @patch("monitor_diario_oficial.WebDriverWait")
+    @patch("monitor_diario_oficial.whatsapp.WebDriverWait")
     def test_levanta_excecao_quando_botao_nao_encontrado(self, mock_wait_cls, mock_sleep, mock_isfile):
         """
         Quando XPath e JavaScript falham, a função DEVE levantar Exception
@@ -1260,7 +1260,7 @@ class TestEnviarArquivoNoGrupo:
 
     @patch("monitor_diario_oficial.os.path.isfile", return_value=True)
     @patch("monitor_diario_oficial.time.sleep")
-    @patch("monitor_diario_oficial.WebDriverWait")
+    @patch("monitor_diario_oficial.whatsapp.WebDriverWait")
     def test_nao_retorna_sucesso_sem_clicar_botao(self, mock_wait_cls, mock_sleep, mock_isfile):
         """
         Quando nenhum botão de envio é encontrado, a função deve levantar
