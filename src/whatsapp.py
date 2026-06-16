@@ -12,6 +12,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import ElementClickInterceptedException
 
 try:
     from webdriver_manager.chrome import ChromeDriverManager
@@ -349,6 +350,68 @@ def _enviar_arquivos_no_grupo(driver, caminhos_pdf: list) -> None:
     )
 
 
+def _fechar_dialogos_sobrepostos(driver) -> bool:
+    """
+    Fecha um diálogo modal sobreposto (pop-up de novidades/notificação), se houver.
+
+    Esses modais costumam aparecer sobre a interface logo APÓS o login e, se não
+    forem dispensados, interceptam o clique na caixa de pesquisa/mensagem.
+
+    Best-effort: retorna True se detectou e tentou fechar um diálogo, False se não
+    havia diálogo na tela. Nunca lança — qualquer falha é apenas registrada.
+
+    Primeiro checa rapidamente se há algum diálogo; só então tenta fechá-lo, para
+    não atrasar o fluxo normal (sem pop-up).
+    """
+    try:
+        WebDriverWait(driver, 3).until(
+            EC.presence_of_element_located((By.XPATH, '//div[@role="dialog"]'))
+        )
+    except Exception:
+        log.info("Sem diálogo sobreposto.")
+        return False
+
+    log.info("Diálogo sobreposto detectado — tentando fechar (pop-up de novidades).")
+    botoes_fechar_popup = [
+        # Botões de ação do diálogo de novidades
+        '//div[@role="dialog"]//button[contains(normalize-space(),"Continuar")]',
+        '//div[@role="dialog"]//button[contains(normalize-space(),"Continue")]',
+        '//div[@role="dialog"]//button[contains(normalize-space(),"Entendi")]',
+        '//div[@role="dialog"]//button[contains(normalize-space(),"OK")]',
+        '//div[@role="dialog"]//button[contains(normalize-space(),"Ok")]',
+        '//div[@role="dialog"]//button[contains(normalize-space(),"Agora não")]',
+        '//div[@role="dialog"]//button[contains(normalize-space(),"Not now")]',
+        # Botão "X" de fechar do diálogo
+        '//div[@role="dialog"]//button[@aria-label="Fechar"]',
+        '//div[@role="dialog"]//button[@aria-label="Close"]',
+        '//div[@role="dialog"]//div[@aria-label="Fechar"]',
+        '//div[@role="dialog"]//div[@aria-label="Close"]',
+    ]
+    for xpath in botoes_fechar_popup:
+        try:
+            botao = WebDriverWait(driver, 2).until(
+                EC.element_to_be_clickable((By.XPATH, xpath))
+            )
+            log.info(f"Fechando pop-up via: {xpath}")
+            botao.click()
+            time.sleep(1)
+            return True
+        except Exception:
+            continue
+
+    # Nenhum botão conhecido funcionou; tenta dispensar com ESC
+    log.warning(
+        "Diálogo detectado mas nenhum botão de fechar conhecido funcionou — "
+        "tentando tecla ESC."
+    )
+    try:
+        webdriver.ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        time.sleep(1)
+    except Exception:
+        log.warning("Não foi possível fechar o diálogo automaticamente.")
+    return True
+
+
 def enviar_whatsapp(
     mensagem: str,
     grupo: str,
@@ -422,26 +485,47 @@ def enviar_whatsapp(
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
 
-        wait = WebDriverWait(driver, timeout_auth)
         wait_curto = WebDriverWait(driver, 30)
 
         driver.get("https://web.whatsapp.com")
         time.sleep(3)
         log.info("Aguardando interface do WhatsApp Web...")
 
-        # Detecta se o QR code está visível e avisa o usuário no log
+        # ── Detecção do QR (apenas informativa) ──────────────────────────────
+        # A presença do QR indica que será preciso logar. NÃO é o ponto de espera:
+        # serve só para registrar uma mensagem clara. O portão real é o passo
+        # seguinte (espera pela interface logada).
         try:
-            WebDriverWait(driver, 5).until(
+            WebDriverWait(driver, 8).until(
                 EC.presence_of_element_located((By.XPATH, '//*[@data-ref]'))
             )
             log.info(
                 "=" * 50 + "\n"
                 "QR CODE VISÍVEL — ESCANEIE AGORA com o WhatsApp\n"
-                f"Aguardando até {timeout_auth} segundos...\n"
+                f"Aguardando o login (até {timeout_auth} segundos)...\n"
                 + "=" * 50
             )
         except Exception:
-            log.info("Sessão ativa detectada — sem necessidade de QR code.")
+            log.info("QR não detectado de imediato — verificando se a sessão já está ativa...")
+
+        # ── PORTÃO DE LOGIN (espera por condição) ────────────────────────────
+        # Bloqueia até a interface logada carregar — a lista de conversas
+        # (div#pane-side) ou a caixa de busca. Cobre os dois casos: sessão já
+        # ativa OU login via QR feito agora. Se não logar dentro de timeout_auth,
+        # falha com mensagem clara em vez de seguir para uma tela onde nada será
+        # encontrado. Vale com --nova-sessao ou sem.
+        try:
+            WebDriverWait(driver, timeout_auth).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, '//div[@id="pane-side"] | //input[@data-tab="3"]')
+                )
+            )
+            log.info("Sessão do WhatsApp ativa (logado).")
+        except Exception:
+            raise Exception(
+                f"Login no WhatsApp Web não confirmado em {timeout_auth}s. "
+                "Se o QR estava visível, ele não foi escaneado a tempo."
+            )
 
         # Detecta e dispensa o diálogo "WhatsApp aberto em outra janela"
         # (aparece quando o mesmo número já está ativo em outra aba/perfil)
@@ -457,60 +541,13 @@ def enviar_whatsapp(
         except Exception:
             log.info("Sem diálogo de conflito de sessão.")
 
-        # Detecta e fecha o pop-up de novidades/atualizações do WhatsApp
-        # (ex.: "Novidades", "Continuar", "Atualização disponível"). Aparece
-        # apenas de vez em quando, sobreposto à interface, e bloqueia a busca
-        # do grupo se não for dispensado. Tudo aqui é best-effort: se não houver
-        # pop-up, seguimos normalmente.
-        #
-        # Para não atrasar a execução normal (sem pop-up), primeiro checamos
-        # rapidamente se há algum diálogo na tela; só então tentamos fechá-lo.
-        try:
-            WebDriverWait(driver, 3).until(
-                EC.presence_of_element_located((By.XPATH, '//div[@role="dialog"]'))
-            )
-            log.info("Diálogo sobreposto detectado — tentando fechar (pop-up de novidades).")
-            botoes_fechar_popup = [
-                # Botões de ação do diálogo de novidades
-                '//div[@role="dialog"]//button[contains(normalize-space(),"Continuar")]',
-                '//div[@role="dialog"]//button[contains(normalize-space(),"Continue")]',
-                '//div[@role="dialog"]//button[contains(normalize-space(),"Entendi")]',
-                '//div[@role="dialog"]//button[contains(normalize-space(),"OK")]',
-                '//div[@role="dialog"]//button[contains(normalize-space(),"Ok")]',
-                '//div[@role="dialog"]//button[contains(normalize-space(),"Agora não")]',
-                '//div[@role="dialog"]//button[contains(normalize-space(),"Not now")]',
-                # Botão "X" de fechar do diálogo
-                '//div[@role="dialog"]//button[@aria-label="Fechar"]',
-                '//div[@role="dialog"]//button[@aria-label="Close"]',
-                '//div[@role="dialog"]//div[@aria-label="Fechar"]',
-                '//div[@role="dialog"]//div[@aria-label="Close"]',
-            ]
-            for xpath in botoes_fechar_popup:
-                try:
-                    botao = WebDriverWait(driver, 2).until(
-                        EC.element_to_be_clickable((By.XPATH, xpath))
-                    )
-                    log.info(f"Fechando pop-up via: {xpath}")
-                    botao.click()
-                    time.sleep(1)
-                    break
-                except Exception:
-                    continue
-            else:
-                # Nenhum botão conhecido funcionou; tenta dispensar com ESC
-                log.warning(
-                    "Diálogo detectado mas nenhum botão de fechar conhecido funcionou — "
-                    "tentando tecla ESC."
-                )
-                try:
-                    webdriver.ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-                    time.sleep(1)
-                except Exception:
-                    log.warning("Não foi possível fechar o diálogo automaticamente.")
-        except Exception:
-            log.info("Sem pop-up de novidades.")
+        # Fecha o modal de novidades/notificação que o WhatsApp abre logo após o
+        # login (e que, se não fechado, intercepta o clique na caixa de pesquisa).
+        _fechar_dialogos_sobrepostos(driver)
 
-        # Aguarda a caixa de pesquisa estar disponível
+        # Aguarda a caixa de pesquisa estar disponível.
+        # Já estamos logados (portão acima), então os timeouts aqui são curtos —
+        # a busca aparece quase imediatamente. A espera longa do login fica no portão.
         # NOTA: no WhatsApp Web atual a caixa é <input data-tab="3">, não div[contenteditable]
         xpaths_pesquisa = [
             '//input[@data-tab="3"]',                                     # versão atual (INPUT)
@@ -524,7 +561,7 @@ def enviar_whatsapp(
         ]
         caixa_pesquisa = None
         for i, xpath in enumerate(xpaths_pesquisa):
-            timeout = timeout_auth if i == 0 else 5
+            timeout = 15 if i == 0 else 5
             try:
                 log.info(f"[{i+1}/{len(xpaths_pesquisa)}] Buscando caixa de pesquisa: {xpath}")
                 caixa_pesquisa = WebDriverWait(driver, timeout).until(
@@ -543,9 +580,19 @@ def enviar_whatsapp(
 
         log.info("WhatsApp Web autenticado e pronto.")
 
-        # Pesquisa o grupo pelo nome (via clipboard — evita erro de emoji no send_keys)
+        # Pesquisa o grupo pelo nome (via clipboard — evita erro de emoji no send_keys).
+        # Defesa em profundidade: se um diálogo tardio interceptar o clique, fecha
+        # o diálogo e tenta de novo (uma vez).
         log.info(f"Pesquisando grupo: '{grupo}'")
-        _colar_no_elemento(driver, caixa_pesquisa, grupo)
+        try:
+            _colar_no_elemento(driver, caixa_pesquisa, grupo)
+        except ElementClickInterceptedException:
+            log.warning(
+                "Clique na caixa de pesquisa interceptado por um diálogo sobreposto — "
+                "fechando o diálogo e tentando novamente."
+            )
+            _fechar_dialogos_sobrepostos(driver)
+            _colar_no_elemento(driver, caixa_pesquisa, grupo)
         time.sleep(2)
 
         # Clica no resultado que corresponde exatamente ao nome do grupo

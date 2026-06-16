@@ -237,12 +237,13 @@ def _setup_selenium_mocks(mock_chrome_class, mock_wait_class):
 
     O novo código cria WebDriverWait dentro de loops, então todas as chamadas
     retornam a mesma instância mock. A sequência de .until() é:
-      1. QR code check          → SeleniumTimeoutException (sem QR, sessão ativa)
-      2. Diálogo "usar janela"  → SeleniumTimeoutException (sem conflito)
-      3. Pop-up de novidades    → SeleniumTimeoutException (sem pop-up, caso comum)
-      4. Search box loop        → retorna caixa_pesquisa (1ª tentativa de XPath)
-      5. Resultado grupo        → retorna resultado_grupo
-      6. Message box loop       → retorna caixa_msg (1ª tentativa de XPath)
+      1. QR code check          → SeleniumTimeoutException (sem QR, informativo)
+      2. Portão de login        → retorna mock_interface (interface logada presente)
+      3. Diálogo "usar janela"  → SeleniumTimeoutException (sem conflito)
+      4. Pop-up de novidades    → SeleniumTimeoutException (sem pop-up, caso comum)
+      5. Search box loop        → retorna caixa_pesquisa (1ª tentativa de XPath)
+      6. Resultado grupo        → retorna resultado_grupo
+      7. Message box loop       → retorna caixa_msg (1ª tentativa de XPath)
     """
     mock_driver = MagicMock()
     mock_chrome_class.return_value = mock_driver
@@ -257,12 +258,13 @@ def _setup_selenium_mocks(mock_chrome_class, mock_wait_class):
     mock_wait_class.return_value = mock_wait_inst
 
     mock_wait_inst.until.side_effect = [
-        SeleniumTimeoutException(),  # QR code não encontrado → sessão ativa
-        SeleniumTimeoutException(),  # diálogo "usar nesta janela" não encontrado
-        SeleniumTimeoutException(),  # pop-up de novidades não presente (caso comum)
-        mock_caixa_pesquisa,         # search box encontrada no 1º XPath (input[@data-tab="3"])
-        mock_resultado_grupo,        # grupo encontrado
-        mock_caixa_msg,              # caixa de mensagem encontrada no 1º XPath
+        SeleniumTimeoutException(),  # 1. QR não encontrado (checagem informativa)
+        mock_interface,              # 2. portão de login → interface logada presente
+        SeleniumTimeoutException(),  # 3. diálogo "usar nesta janela" não encontrado
+        SeleniumTimeoutException(),  # 4. pop-up de novidades não presente (caso comum)
+        mock_caixa_pesquisa,         # 5. search box encontrada no 1º XPath (input[@data-tab="3"])
+        mock_resultado_grupo,        # 6. grupo encontrado
+        mock_caixa_msg,              # 7. caixa de mensagem encontrada no 1º XPath
     ]
 
     # execute_script retorna lista vazia para não poluir o log com MagicMock
@@ -1079,8 +1081,9 @@ class TestEnviarWhatsapp:
 
         monitor.enviar_whatsapp("Mensagem", "Grupo")
 
-        timeout_primeiro_wait = mock_wait.call_args_list[0][0][1]
-        assert timeout_primeiro_wait == monitor.TIMEOUT_QR_CODE
+        # O portão de login usa timeout_auth = TIMEOUT_QR_CODE quando não há sessão.
+        timeouts = [c.args[1] for c in mock_wait.call_args_list]
+        assert monitor.TIMEOUT_QR_CODE in timeouts
 
     @_aplicar_patches
     def test_timeout_auth_30s_com_sessao_valida(
@@ -1092,8 +1095,9 @@ class TestEnviarWhatsapp:
 
         monitor.enviar_whatsapp("Mensagem", "Grupo")
 
-        timeout_primeiro_wait = mock_wait.call_args_list[0][0][1]
-        assert timeout_primeiro_wait == 30
+        # Com sessão válida, timeout_auth é 30s — a longa espera de QR não é usada.
+        timeouts = [c.args[1] for c in mock_wait.call_args_list]
+        assert monitor.TIMEOUT_QR_CODE not in timeouts
 
     @_aplicar_patches
     def test_mensagem_colada_via_clipboard(
@@ -1174,7 +1178,8 @@ class TestEnviarWhatsapp:
         mock_caixa_msg = MagicMock()
 
         mock_wait_inst.until.side_effect = [
-            SeleniumTimeoutException(),  # QR ausente → sessão ativa
+            SeleniumTimeoutException(),  # QR ausente
+            MagicMock(),                 # portão de login → logado
             SeleniumTimeoutException(),  # sem diálogo "usar nesta janela"
             MagicMock(),                 # presence_of //div[@role="dialog"] → pop-up presente
             mock_popup_btn,              # 1º botão de fechar conhecido é clicável
@@ -1234,8 +1239,10 @@ class TestEnviarWhatsapp:
         ), patch("monitor_diario_oficial.whatsapp.shutil.rmtree"):
             monitor.enviar_whatsapp("Msg", "Grupo", sessao_descartavel=True)
 
-        timeout_primeiro_wait = mock_wait.call_args_list[0][0][1]
-        assert timeout_primeiro_wait == monitor.TIMEOUT_QR_CODE
+        # Mesmo com isdir=True, a flag força sessao_valida=False → timeout_auth=TIMEOUT_QR_CODE
+        # é usado no portão de login.
+        timeouts = [c.args[1] for c in mock_wait.call_args_list]
+        assert monitor.TIMEOUT_QR_CODE in timeouts
 
     @_aplicar_patches
     def test_sem_flag_usa_perfil_persistente(
@@ -1267,6 +1274,101 @@ class TestEnviarWhatsapp:
 
         assert resultado is False
         mock_rmtree.assert_called_once_with("/tmp/wa_qr_fake", ignore_errors=True)
+
+    @_aplicar_patches
+    def test_clique_busca_interceptado_fecha_dialogo_e_repete(
+        self, mock_chrome, mock_wait, mock_service, mock_cdm, mock_isdir, mock_sleep, mock_colar
+    ):
+        """
+        BUG: após o login, um modal de novidades sobrepõe a caixa de pesquisa e
+        intercepta o clique (ElementClickInterceptedException). O envio deve se
+        recuperar: fechar o diálogo e repetir o clique, em vez de falhar.
+        """
+        from selenium.common.exceptions import ElementClickInterceptedException
+
+        mock_isdir.return_value = True
+        mock_driver = MagicMock()
+        mock_chrome.return_value = mock_driver
+        mock_driver.execute_script.return_value = []
+
+        mock_wait_inst = MagicMock()
+        mock_wait.return_value = mock_wait_inst
+        # _fechar_dialogos_sobrepostos é patchado, então não consome chamadas de until.
+        mock_wait_inst.until.side_effect = [
+            SeleniumTimeoutException(),  # QR ausente
+            MagicMock(),                 # portão de login → logado
+            SeleniumTimeoutException(),  # sem 'usar nesta janela'
+            MagicMock(),                 # caixa de pesquisa
+            MagicMock(),                 # resultado do grupo
+            MagicMock(),                 # caixa de mensagem
+        ]
+        # 1ª colagem (caixa de pesquisa) é interceptada por um diálogo; depois funciona.
+        mock_colar.side_effect = [
+            ElementClickInterceptedException("interceptado pelo modal"),
+            None,  # retry da pesquisa após fechar o diálogo
+            None,  # caixa de mensagem
+        ]
+        with patch("monitor_diario_oficial.whatsapp._fechar_dialogos_sobrepostos") as mock_fechar:
+            resultado = monitor.enviar_whatsapp("Mensagem", "Grupo")
+
+        assert resultado is True
+        # _colar_no_elemento: pesquisa (falha) → pesquisa (retry) → mensagem = 3 chamadas
+        assert mock_colar.call_count == 3
+        # O diálogo deve ter sido fechado ao detectar a interceptação.
+        assert mock_fechar.called
+
+    @_aplicar_patches
+    def test_login_nao_confirmado_retorna_false(
+        self, mock_chrome, mock_wait, mock_service, mock_cdm, mock_isdir, mock_sleep, mock_colar
+    ):
+        """
+        Se o login não é confirmado (o portão de login expira porque o QR não foi
+        escaneado a tempo), o envio falha de forma clara — retorna False e NÃO segue
+        para procurar a caixa de pesquisa.
+        """
+        mock_isdir.return_value = False
+        mock_driver = MagicMock()
+        mock_chrome.return_value = mock_driver
+        mock_driver.execute_script.return_value = []
+
+        mock_wait_inst = MagicMock()
+        mock_wait.return_value = mock_wait_inst
+        mock_wait_inst.until.side_effect = [
+            SeleniumTimeoutException(),  # QR (checagem informativa)
+            SeleniumTimeoutException(),  # portão de login expira → não logou
+        ]
+
+        resultado = monitor.enviar_whatsapp("Mensagem", "Grupo")
+
+        assert resultado is False
+        # Não deve nem tentar colar nada (não chegou à caixa de pesquisa).
+        mock_colar.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════
+# 6b. _fechar_dialogos_sobrepostos — fecha modal pós-login
+# ══════════════════════════════════════════════════════════════
+
+class TestFecharDialogosSobrepostos:
+
+    def test_sem_dialogo_retorna_false(self):
+        """Sem diálogo na tela, é no-op e retorna False."""
+        mock_driver = MagicMock()
+        with patch("monitor_diario_oficial.whatsapp.WebDriverWait") as mock_wait:
+            mock_wait.return_value.until.side_effect = SeleniumTimeoutException()
+            resultado = monitor.whatsapp._fechar_dialogos_sobrepostos(mock_driver)
+        assert resultado is False
+
+    def test_dialogo_presente_clica_botao_e_retorna_true(self):
+        """Com diálogo presente, clica no 1º botão de fechar conhecido e retorna True."""
+        mock_driver = MagicMock()
+        mock_botao = MagicMock()
+        with patch("monitor_diario_oficial.whatsapp.WebDriverWait") as mock_wait:
+            # 1ª until: presença do diálogo → presente; 2ª: botão de fechar clicável.
+            mock_wait.return_value.until.side_effect = [MagicMock(), mock_botao]
+            resultado = monitor.whatsapp._fechar_dialogos_sobrepostos(mock_driver)
+        assert resultado is True
+        mock_botao.click.assert_called_once()
 
 
 # ══════════════════════════════════════════════════════════════
