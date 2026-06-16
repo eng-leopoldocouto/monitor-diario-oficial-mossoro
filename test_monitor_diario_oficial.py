@@ -994,6 +994,95 @@ class TestExtrairFuncaoContrato:
         assert f == "função não identificada"
 
 
+class TestExtrairParticipacao:
+    """
+    Quando a função não é Gestor/Fiscal de contrato, antes de cair em
+    'função não identificada' o sistema procura, NO PARÁGRAFO em que o nome
+    aparece, uma menção a 'participar'/'participação' e devolve o trecho do
+    termo até o ', conforme...' (ou 1º ponto / fim do parágrafo), com a grafia
+    original do DOM.
+    """
+
+    # Parágrafos REAIS do DOM Nº 841 (publicação 1876).
+    _ART_104 = (
+        "Conceder 1.0 (uma) diária ao senhor PETRAS VINÍCIUS DE SOUSA, matrícula "
+        "n.º 035471-1, ocupante do cargo/função de VEREADOR, para custear despesas "
+        "destinadas à cobertura de gastos com alimentação e hospedagem, conforme "
+        "dispõe o parágrafo único do art. 16 da Res. n. 028/2020-TCE/RN, durante "
+        "seu deslocamento à cidade de NATAL/RN, nos dias 17/06/2026 a 18/06/2026, "
+        "para participar de audiência na Superintendência Regional do Departamento "
+        "Nacional de Infraestrutura de Transportes (DNIT), conforme consta "
+        "especificado no ANEXO I - Solicitação de Diária."
+    )
+    _ART_103 = (
+        "Conceder diária ao senhor JOAO ASSESSOR para assessorar a vereadora "
+        "Plúvia Oliveira em sua participação na Solenidade em homenagem aos Povos "
+        "de Axé, conforme consta especificado no ANEXO I - Solicitação de Diária."
+    )
+
+    # ---- helper _extrair_participacao (direto) ----
+
+    def test_extrai_participar_e_corta_no_conforme(self):
+        trecho = monitor._extrair_participacao(self._ART_104, "PETRAS VINÍCIUS DE SOUSA")
+        assert trecho == (
+            "participar de audiência na Superintendência Regional do Departamento "
+            "Nacional de Infraestrutura de Transportes (DNIT)"
+        )
+
+    def test_extrai_participacao_substantivo(self):
+        trecho = monitor._extrair_participacao(self._ART_103, "JOAO ASSESSOR")
+        assert trecho == "participação na Solenidade em homenagem aos Povos de Axé"
+
+    def test_preserva_grafia_original_do_dom(self):
+        # No DOM a palavra está em CAIXA ALTA — deve ser devolvida assim mesmo,
+        # provando que a busca é em minúsculo mas o recorte usa o texto original.
+        cont = "Art. 1º Designar JOAO SILVA para PARTICIPAR da reunião especial, conforme orientação."
+        trecho = monitor._extrair_participacao(cont, "JOAO SILVA")
+        assert trecho == "PARTICIPAR da reunião especial"
+
+    def test_fallback_corta_no_primeiro_ponto_sem_conforme(self):
+        cont = "Art. 1º Designar FULANO DE TAL para participar do evento anual. Outras providências."
+        trecho = monitor._extrair_participacao(cont, "FULANO DE TAL")
+        assert trecho == "participar do evento anual"
+
+    def test_sem_participacao_retorna_none(self):
+        cont = "Art. 1º Designar FULANO DE TAL para acompanhar a obra, conforme cronograma."
+        assert monitor._extrair_participacao(cont, "FULANO DE TAL") is None
+
+    def test_busca_somente_no_paragrafo_do_nome(self):
+        # Nome num parágrafo, 'participar' em outro → fora do escopo → None.
+        cont = (
+            "Art. 1º Designar o servidor JOAO SILVA, matrícula 1.\n"
+            "Fica o servidor autorizado a participar da reunião, conforme agenda."
+        )
+        assert monitor._extrair_participacao(cont, "JOAO SILVA") is None
+
+    # ---- integração via _extrair_funcao_contrato ----
+
+    def test_funcao_vira_o_trecho_de_participacao(self):
+        f, c = monitor._extrair_funcao_contrato(self._ART_104, "PETRAS VINÍCIUS DE SOUSA")
+        assert f == (
+            "participar de audiência na Superintendência Regional do Departamento "
+            "Nacional de Infraestrutura de Transportes (DNIT)"
+        )
+        assert c is None
+
+    def test_continua_nao_identificada_sem_participar(self):
+        cont = "Art. 1º Designar FULANO DE TAL para acompanhar a obra, conforme cronograma."
+        f, c = monitor._extrair_funcao_contrato(cont, "FULANO DE TAL")
+        assert f == "função não identificada" and c is None
+
+    def test_gestor_tem_prioridade_sobre_participacao(self):
+        # Mesmo havendo 'participar' no texto, se o papel Gestor/Fiscal for
+        # identificado, ele prevalece (a participação é só fallback).
+        cont = (
+            "Art. 1º Designar o servidor CARLOS para atuar como GESTOR DO CONTRATO "
+            "n° 50/2026, com a finalidade de participar da fiscalização."
+        )
+        f, c = monitor._extrair_funcao_contrato(cont, "CARLOS")
+        assert f == "Gestor" and c == "50/2026"
+
+
 # ══════════════════════════════════════════════════════════════
 # 6. enviar_whatsapp
 # ══════════════════════════════════════════════════════════════

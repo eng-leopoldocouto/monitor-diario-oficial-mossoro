@@ -458,6 +458,46 @@ def formatar_fofocas(fofocas: list[dict], pontos_facultativos: list[dict] | None
     return "\n".join(linhas)
 
 
+def _extrair_participacao(conteudo: str, nome: str) -> str | None:
+    """
+    Fallback para a função de uma pessoa quando não é Gestor/Fiscal de contrato:
+    procura, NO PARÁGRAFO em que o nome monitorado aparece, uma menção a
+    'participar' ou 'participação' (busca em minúsculo, pega qualquer caixa) e
+    devolve o trecho do termo até o ', conforme...' — ou, na ausência dele, até
+    o primeiro ponto final ou o fim do parágrafo.
+
+    O recorte usa o `conteudo` ORIGINAL (não a versão MAIÚSCULA/colapsada usada
+    em _extrair_funcao_contrato), preservando a grafia exata do DOM.
+
+    Retorna o trecho encontrado ou None se o parágrafo do nome não mencionar
+    participação.
+    """
+    nome_low = " ".join(nome.lower().split())
+    for paragrafo in conteudo.split("\n"):
+        if not paragrafo.strip():
+            continue
+        # O nome monitorado está NESTE parágrafo? (case-insensitive, espaços colapsados)
+        if nome_low not in " ".join(paragrafo.lower().split()):
+            continue
+
+        p_low = paragrafo.lower()
+        posicoes = [p for p in (p_low.find("participar"), p_low.find("participação")) if p != -1]
+        if not posicoes:
+            continue
+
+        trecho = paragrafo[min(posicoes):]  # da palavra em diante, grafia original do DOM
+        m_conf = re.search(r',\s*conforme\b', trecho, re.IGNORECASE)
+        if m_conf:
+            trecho = trecho[:m_conf.start()]          # corta o ", conforme ..." burocrático
+        else:
+            ponto = trecho.find(".")                  # fallback: primeiro ponto final
+            if ponto != -1:
+                trecho = trecho[:ponto]
+        return trecho.strip()
+
+    return None
+
+
 def _extrair_funcao_contrato(conteudo: str, nome: str) -> tuple[str, str | None]:
     """
     Determina a FUNÇÃO de uma pessoa numa portaria de designação e o nº do contrato.
@@ -471,8 +511,10 @@ def _extrair_funcao_contrato(conteudo: str, nome: str) -> tuple[str, str | None]
     O papel (GESTOR/FISCAL) e o contrato vêm de "para atuar como <PAPEL> DO CONTRATO
     n° <XX/AAAA>" do próprio bloco.
 
-    Retorna (funcao, contrato). Se não identificar o papel → ("função não
-    identificada", contrato_ou_None); se não achar o contrato → (funcao, None).
+    Retorna (funcao, contrato). Se não identificar o papel de Gestor/Fiscal,
+    recorre a _extrair_participacao (portarias de diária/designação onde a
+    pessoa vai "participar" de algo); só então, em último caso, retorna
+    ("função não identificada", None).
     """
     # Colapsa espaços/quebras/nbsp (mesma normalização de buscar_nomes_em_portarias)
     texto = " ".join(conteudo.upper().split())
@@ -500,7 +542,9 @@ def _extrair_funcao_contrato(conteudo: str, nome: str) -> tuple[str, str | None]
         m_papel = re_papel.search(bloco)
         contrato = m_papel.group(2).replace(" ", "") if m_papel else None
         if not m_papel:
-            return ("função não identificada", None)
+            # Sem papel de Gestor/Fiscal: tenta o fallback de participação antes
+            # de desistir.
+            return (_extrair_participacao(conteudo, nome) or "função não identificada", None)
 
         papel = "Gestor" if m_papel.group(1).startswith("GESTOR") else "Fiscal"
         m_subst = re_subst.search(bloco)
@@ -508,7 +552,8 @@ def _extrair_funcao_contrato(conteudo: str, nome: str) -> tuple[str, str | None]
         funcao = f"{papel} Substituto" if eh_substituto else papel
         return (funcao, contrato)
 
-    return ("função não identificada", None)
+    # Nome não localizado em nenhum bloco: ainda tenta o fallback de participação.
+    return (_extrair_participacao(conteudo, nome) or "função não identificada", None)
 
 
 def formatar_resumo_por_pessoa(ocorrencias: list[dict]) -> str:

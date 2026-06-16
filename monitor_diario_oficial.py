@@ -48,8 +48,8 @@ from src.scraping import (  # noqa: F401
 from src.parsing import (  # noqa: F401
     buscar_nomes_em_portarias, _extrair_dados_fofoca, detectar_fofocas,
     detectar_ponto_facultativo, formatar_ponto_facultativo, promovido_remanejado,
-    formatar_fofocas, _extrair_funcao_contrato, formatar_resumo_por_pessoa,
-    formatar_mensagem,
+    formatar_fofocas, _extrair_funcao_contrato, _extrair_participacao,
+    formatar_resumo_por_pessoa, formatar_mensagem,
 )
 from src.pdf import (  # noqa: F401
     buscar_url_pdf, _sanitizar_nome_arquivo, extrair_pdfs_por_ocorrencia,

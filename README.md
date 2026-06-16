@@ -353,7 +353,7 @@ Todas as dependências são instaladas automaticamente pelo `pip install -r requ
 
 ## Rodando os testes
 
-O projeto possui 170 testes automatizados. Para executá-los:
+O projeto possui 183 testes automatizados. Para executá-los:
 
 ```bash
 pip install pytest
@@ -409,7 +409,7 @@ git checkout -b minha-melhoria
 pytest test_monitor_diario_oficial.py -v
 ```
 
-Todos os 170 testes devem passar antes de abrir o Pull Request. Se você adicionar uma nova funcionalidade, adicione também o teste correspondente.
+Todos os 183 testes devem passar antes de abrir o Pull Request. Se você adicionar uma nova funcionalidade, adicione também o teste correspondente.
 
 ### 4. Envie o Pull Request
 
