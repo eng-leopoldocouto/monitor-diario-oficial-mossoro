@@ -155,7 +155,7 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
     url_pdf = buscar_url_pdf(publicacao["url_html"])
     caminhos_pdf = []
     if url_pdf:
-        caminhos_pdf = extrair_pdfs_por_ocorrencia(url_pdf, ocorrencias)
+        caminhos_pdf = extrair_pdfs_por_ocorrencia(url_pdf, ocorrencias, portarias)
         if not caminhos_pdf:
             log.warning("Nenhum PDF gerado — apenas a mensagem de texto será enviada.")
     else:
