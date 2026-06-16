@@ -366,6 +366,8 @@ def enviar_whatsapp(
 
     Inicia o Chrome localmente via ChromeDriver.
     O perfil Chrome (sessão WhatsApp) é salvo em WHATSAPP_PROFILE_DIR.
+    Se sessao_descartavel=True, usa um perfil Chrome temporário e descartável
+    (QR sempre exigido, nada persistido); o perfil de produção fica intacto.
     """
     log.info(f"Enviando mensagem para o grupo WhatsApp: '{grupo}'")
 

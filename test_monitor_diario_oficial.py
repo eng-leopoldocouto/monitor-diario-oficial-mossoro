@@ -1253,6 +1253,21 @@ class TestEnviarWhatsapp:
         mock_mkdtemp.assert_not_called()
         mock_rmtree.assert_not_called()
 
+    @_aplicar_patches
+    def test_sessao_descartavel_remove_perfil_mesmo_com_falha(
+        self, mock_chrome, mock_wait, mock_service, mock_cdm, mock_isdir, mock_sleep, mock_colar
+    ):
+        """O perfil temporário é removido mesmo se o envio falhar (limpeza no finally)."""
+        mock_chrome.side_effect = Exception("Chrome falhou ao iniciar")
+        with patch(
+            "monitor_diario_oficial.whatsapp.tempfile.mkdtemp",
+            return_value="/tmp/wa_qr_fake",
+        ), patch("monitor_diario_oficial.whatsapp.shutil.rmtree") as mock_rmtree:
+            resultado = monitor.enviar_whatsapp("Msg", "Grupo", sessao_descartavel=True)
+
+        assert resultado is False
+        mock_rmtree.assert_called_once_with("/tmp/wa_qr_fake", ignore_errors=True)
+
 
 # ══════════════════════════════════════════════════════════════
 # 7. _enviar_arquivos_no_grupo
