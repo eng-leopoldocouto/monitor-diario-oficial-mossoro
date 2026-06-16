@@ -203,7 +203,6 @@ def extrair_pdfs_por_ocorrencia(
         titulo_norm = _normalizar(titulo)
 
         writer = PdfWriter()
-        paginas_incluidas: list[int] = []
 
         # Localiza o início do texto desta portaria no combined.
         start_pos = combined.find(titulo_norm)
