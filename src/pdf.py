@@ -117,7 +117,11 @@ def _paginas_da_portaria(
     return paginas
 
 
-def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[str]:
+def extrair_pdfs_por_ocorrencia(
+    url_pdf: str,
+    ocorrencias: list[dict],
+    portarias: list[dict] | None = None,
+) -> list[str]:
     """
     Baixa o PDF da publicação e gera um arquivo PDF separado para cada
     ocorrência encontrada, contendo apenas as páginas da portaria associada.
@@ -126,6 +130,11 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
     Exemplo: "PORTARIA Nº 262, DE 08 DE MAIO DE 2026 - MARINA COSTA.pdf"
 
     Retorna lista de caminhos dos PDFs gerados (vazia se falhar).
+
+    Quando `portarias` (lista ORDENADA de atos da edição, vinda de
+    extrair_portarias) é fornecida, o fim de cada portaria é o início do ato
+    seguinte — evitando arrastar páginas quando a portaria é seguida por atos de
+    outro tipo (extrato, termo…). Sem `portarias`, mantém o comportamento antigo.
     """
     try:
         from pypdf import PdfReader, PdfWriter
@@ -202,25 +211,19 @@ def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[s
             log.warning(f"Título '{titulo}' não localizado no PDF — ocorrência pulada.")
             continue
 
-        # Determina onde a portaria termina: próximo título de portaria (qualquer
-        # uma, não só as monitoradas) que apareça APÓS o início desta portaria.
-        # Isso evita incluir páginas de portarias não monitoradas ao fim do PDF.
-        search_from = start_pos + len(titulo_norm)
-        end_pos = len(combined)
-        for pos in all_portaria_positions:
-            if pos >= search_from and pos < end_pos:
-                end_pos = pos
-                break  # lista já está ordenada por posição
+        # Fronteira final da portaria: início do PRÓXIMO ato na ordem real do
+        # Diário (lista `portarias`, segmentada via ato_separator). Sem a lista,
+        # ou se o próximo ato não for localizável no PDF, recai no comportamento
+        # antigo (próximo PORTARIA Nº; depois fim do documento).
+        prox_ato = _prox_ato_titulo(portaria, portarias)
+        prox_titulo_norm = _normalizar(prox_ato) if prox_ato else None
 
-        # Inclui todas as páginas cujo intervalo de texto se sobrepõe ao span
-        # [start_pos, end_pos) da portaria — captura corretamente portarias que
-        # ocupam 2 ou mais páginas, mesmo quando uma página tem início de outra.
-        for page_idx in range(len(reader.pages)):
-            pg_start = page_offsets[page_idx]
-            pg_end   = page_offsets[page_idx + 1]
-            if pg_start < end_pos and pg_end > start_pos:
-                writer.add_page(reader.pages[page_idx])
-                paginas_incluidas.append(page_idx + 1)
+        paginas_incluidas = _paginas_da_portaria(
+            combined, page_offsets, start_pos, titulo_norm,
+            prox_titulo_norm, all_portaria_positions,
+        )
+        for pg in paginas_incluidas:
+            writer.add_page(reader.pages[pg - 1])
 
         if not paginas_incluidas:
             log.warning(f"Nenhuma página encontrada para '{titulo}' — ocorrência pulada.")
