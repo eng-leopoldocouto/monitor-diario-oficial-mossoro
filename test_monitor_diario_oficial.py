@@ -2250,6 +2250,10 @@ class TestProxAtoTitulo:
     def test_sem_lista_retorna_none(self):
         assert monitor._prox_ato_titulo({"titulo": "X"}, None) is None
 
+    def test_lista_vazia_retorna_none(self):
+        # lista vazia é tratada como "sem lista" (mesmo ramo `if not portarias`)
+        assert monitor._prox_ato_titulo({"titulo": "X"}, []) is None
+
     def test_objeto_ausente_na_lista_retorna_none(self):
         p1 = {"titulo": "A"}
         outros = [{"titulo": "B"}, {"titulo": "C"}]

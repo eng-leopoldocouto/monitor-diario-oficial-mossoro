@@ -66,6 +66,7 @@ def _prox_ato_titulo(portaria: dict, portarias: list[dict] | None) -> str | None
         return None
     for i, ato in enumerate(portarias):
         if ato is portaria:
+            # lista produzida por extrair_portarias: "titulo" sempre presente
             return portarias[i + 1]["titulo"] if i + 1 < len(portarias) else None
     return None
 
