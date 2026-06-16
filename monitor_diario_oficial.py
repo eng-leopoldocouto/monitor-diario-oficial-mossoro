@@ -59,7 +59,8 @@ from src.whatsapp import (  # noqa: F401
 )
 
 
-def main(modo_teste: bool = False, numero_diario: int | None = None):
+def main(modo_teste: bool = False, numero_diario: int | None = None,
+         sessao_descartavel: bool = False):
     log.info("=" * 60)
     log.info("Iniciando monitoramento do Diário Oficial de Mossoró")
     if modo_teste:
@@ -137,7 +138,11 @@ def main(modo_teste: bool = False, numero_diario: int | None = None):
             f"❌ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."
         )
         # Fofoca enviada como segunda mensagem, mesmo sem PDFs
-        enviar_whatsapp(mensagem_vazia, grupo_destino, mensagem_apos_pdf=secao_fofoca)
+        enviar_whatsapp(
+            mensagem_vazia, grupo_destino,
+            mensagem_apos_pdf=secao_fofoca,
+            sessao_descartavel=sessao_descartavel,
+        )
         return
 
     log.info(f"{len(ocorrencias)} ocorrência(s) encontrada(s). Preparando envio...")
@@ -156,7 +161,11 @@ def main(modo_teste: bool = False, numero_diario: int | None = None):
         log.warning("PDF não encontrado — apenas a mensagem de texto será enviada.")
 
     # 7. Envia: (1) mensagem principal, (2) PDFs, (3) fofoca — tudo na mesma sessão
-    sucesso = enviar_whatsapp(mensagem, grupo_destino, caminhos_pdf, mensagem_apos_pdf=secao_fofoca)
+    sucesso = enviar_whatsapp(
+        mensagem, grupo_destino, caminhos_pdf,
+        mensagem_apos_pdf=secao_fofoca,
+        sessao_descartavel=sessao_descartavel,
+    )
 
     # 8. Remove os PDFs temporários após envio
     for caminho in caminhos_pdf:

@@ -1981,6 +1981,21 @@ class TestMainRoteamento:
         m_ult.assert_called_once()
         m_num.assert_not_called()
 
+    def test_propaga_sessao_descartavel_para_enviar_whatsapp(self):
+        """main(sessao_descartavel=True) deve repassar a flag a enviar_whatsapp."""
+        publicacao = {"numero": 999, "data": "16/06/2026", "url_html": "http://x/999"}
+        with patch("monitor_diario_oficial.buscar_ultima_publicacao", return_value=publicacao), \
+             patch("monitor_diario_oficial.extrair_portarias", return_value=["ato"]), \
+             patch("monitor_diario_oficial.buscar_nomes_em_portarias", return_value=[]), \
+             patch("monitor_diario_oficial.detectar_fofocas", return_value=[]), \
+             patch("monitor_diario_oficial.promovido_remanejado", return_value=[]), \
+             patch("monitor_diario_oficial.detectar_ponto_facultativo", return_value=[]), \
+             patch("monitor_diario_oficial.formatar_fofocas", return_value=""), \
+             patch("monitor_diario_oficial.enviar_whatsapp", return_value=True) as m_env:
+            monitor.main(modo_teste=True, sessao_descartavel=True)
+
+        assert m_env.call_args.kwargs.get("sessao_descartavel") is True
+
 
 # ══════════════════════════════════════════════════════════════
 # 11. _extrair_numero_teste — número que segue a flag --test
