@@ -71,6 +71,49 @@ def _prox_ato_titulo(portaria: dict, portarias: list[dict] | None) -> str | None
     return None
 
 
+def _paginas_da_portaria(
+    combined: str,
+    page_offsets: list[int],
+    start_pos: int,
+    titulo_norm: str,
+    prox_titulo_norm: str | None,
+    all_portaria_positions: list[int],
+) -> list[int]:
+    """
+    Páginas (1-based) do PDF que contêm a portaria iniciada em `start_pos`.
+
+    A fronteira final (`end_pos`) é, em ordem de preferência:
+      1. início do PRÓXIMO ato (`prox_titulo_norm`), localizado após a portaria;
+      2. próximo cabeçalho `PORTARIA Nº ...,` (`all_portaria_positions`);
+      3. fim do documento.
+
+    Inclui toda página cujo intervalo de texto [pg_start, pg_end) se sobrepõe a
+    [start_pos, end_pos). `page_offsets` tem len == nº de páginas + 1 (sentinela).
+    """
+    search_from = start_pos + len(titulo_norm)
+
+    end_pos = -1
+    if prox_titulo_norm:
+        achado = combined.find(prox_titulo_norm, search_from)
+        if achado != -1:
+            end_pos = achado
+    if end_pos == -1:
+        for pos in all_portaria_positions:
+            if pos >= search_from:
+                end_pos = pos
+                break  # lista já ordenada por posição
+    if end_pos == -1:
+        end_pos = len(combined)
+
+    paginas: list[int] = []
+    for page_idx in range(len(page_offsets) - 1):
+        pg_start = page_offsets[page_idx]
+        pg_end = page_offsets[page_idx + 1]
+        if pg_start < end_pos and pg_end > start_pos:
+            paginas.append(page_idx + 1)
+    return paginas
+
+
 def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[str]:
     """
     Baixa o PDF da publicação e gera um arquivo PDF separado para cada

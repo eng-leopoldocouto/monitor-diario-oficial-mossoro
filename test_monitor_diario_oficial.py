@@ -2258,3 +2258,88 @@ class TestProxAtoTitulo:
         p1 = {"titulo": "A"}
         outros = [{"titulo": "B"}, {"titulo": "C"}]
         assert monitor._prox_ato_titulo(p1, outros) is None
+
+
+def _montar_combined(paginas_norm):
+    """Replica o combined/page_offsets de extrair_pdfs_por_ocorrencia.
+
+    Retorna (combined, page_offsets). page_offsets tem len == nº de páginas + 1
+    (sentinela), com cada página separada por '\\n' (somando +1 ao offset)."""
+    offsets = []
+    pos = 0
+    for t in paginas_norm:
+        offsets.append(pos)
+        pos += len(t) + 1
+    offsets.append(pos)
+    return "\n".join(paginas_norm), offsets
+
+
+_RX_PORTARIA = re.compile(r'PORTARIA\s+N[Oº°]\s+\d+\s*,')
+
+
+class TestPaginasDaPortaria:
+
+    def test_portaria_seguida_de_outro_ato_fica_em_uma_pagina(self):
+        # Cenário PORTARIA 47: termina na pág. 1; depois vêm extratos/termos;
+        # o próximo PORTARIA só aparece na pág. 2.
+        pg1 = ("PORTARIA NO 47, DE 12 DE JUNHO DE 2026\n"
+               "ART 1 CONCEDER DIARIA AO SR FULANO\n"
+               "MOSSORO-RN 12 DE JUNHO DE 2026\n"
+               "EXTRATO DE CONTRATO\nCONTRATO NO 06/2026")
+        pg2 = ("EXPEDIENTE\nPORTARIA NO 25, DE 15 DE JUNHO DE 2026\nART 1 ...")
+        combined, offs = _montar_combined([pg1, pg2])
+        all_port = [m.start() for m in _RX_PORTARIA.finditer(combined)]
+        start = combined.find("PORTARIA NO 47,")
+
+        pgs = monitor._paginas_da_portaria(
+            combined, offs, start, "PORTARIA NO 47,",
+            "EXTRATO DE CONTRATO", all_port,
+        )
+        assert pgs == [1]
+
+    def test_sem_proximo_ato_recai_em_proxima_portaria(self):
+        # Mesma montagem, mas prox_titulo_norm=None (lista não fornecida):
+        # comportamento ANTIGO — inclui a pág. 2 indevidamente.
+        pg1 = ("PORTARIA NO 47, DE 12 DE JUNHO DE 2026\nART 1 ...\n"
+               "EXTRATO DE CONTRATO\nCONTRATO NO 06/2026")
+        pg2 = ("EXPEDIENTE\nPORTARIA NO 25, DE 15 DE JUNHO DE 2026\n...")
+        combined, offs = _montar_combined([pg1, pg2])
+        all_port = [m.start() for m in _RX_PORTARIA.finditer(combined)]
+        start = combined.find("PORTARIA NO 47,")
+
+        pgs = monitor._paginas_da_portaria(
+            combined, offs, start, "PORTARIA NO 47,", None, all_port,
+        )
+        assert pgs == [1, 2]
+
+    def test_portaria_que_continua_inclui_duas_paginas(self):
+        # Cenário PORTARIA 45: corpo continua na pág. 2; próximo ato (PORTARIA 46)
+        # está na pág. 2 → as duas páginas entram.
+        pg1 = ("PORTARIA NO 45, DE 12 DE JUNHO DE 2026\n"
+               "ART 1 TEXTO LONGO QUE CONTINUA NA PROXIMA PAGINA")
+        pg2 = ("CONTINUACAO DO ARTIGO\nMOSSORO-RN 12 DE JUNHO\n"
+               "PORTARIA NO 46, DE 12 DE JUNHO DE 2026\nART 1 ...")
+        combined, offs = _montar_combined([pg1, pg2])
+        all_port = [m.start() for m in _RX_PORTARIA.finditer(combined)]
+        start = combined.find("PORTARIA NO 45,")
+
+        pgs = monitor._paginas_da_portaria(
+            combined, offs, start, "PORTARIA NO 45,",
+            "PORTARIA NO 46,", all_port,
+        )
+        assert pgs == [1, 2]
+
+    def test_proximo_ato_nao_localizado_e_sem_proxima_portaria_vai_ate_fim(self):
+        # prox_titulo existe na lista do HTML mas não é localizável no PDF, e não
+        # há próximo PORTARIA → fallback final: fim do documento.
+        pg1 = ("PORTARIA NO 99, DE 12 DE JUNHO DE 2026\nART 1 ...")
+        pg2 = ("CONTINUACAO SEM CABECALHO DE PORTARIA")
+        combined, offs = _montar_combined([pg1, pg2])
+        all_port = [m.start() for m in _RX_PORTARIA.finditer(combined)]
+        start = combined.find("PORTARIA NO 99,")
+
+        pgs = monitor._paginas_da_portaria(
+            combined, offs, start, "PORTARIA NO 99,",
+            "PORTARIA NO 100,", all_port,  # 100 não aparece no texto
+        )
+        assert pgs == [1, 2]

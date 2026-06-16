@@ -53,7 +53,7 @@ from src.parsing import (  # noqa: F401
 )
 from src.pdf import (  # noqa: F401
     buscar_url_pdf, _sanitizar_nome_arquivo, extrair_pdfs_por_ocorrencia,
-    _prox_ato_titulo,
+    _prox_ato_titulo, _paginas_da_portaria,
 )
 from src.whatsapp import (  # noqa: F401
     _colar_windows, _colar_no_elemento, _enviar_arquivos_no_grupo, enviar_whatsapp,
