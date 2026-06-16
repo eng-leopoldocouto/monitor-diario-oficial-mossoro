@@ -2298,8 +2298,11 @@ class TestPaginasDaPortaria:
         assert pgs == [1]
 
     def test_sem_proximo_ato_recai_em_proxima_portaria(self):
-        # Mesma montagem, mas prox_titulo_norm=None (lista não fornecida):
-        # comportamento ANTIGO — inclui a pág. 2 indevidamente.
+        # Documenta o CAMINHO DE FALLBACK (não o ideal): sem prox_titulo_norm, a
+        # fronteira recai no próximo cabeçalho PORTARIA → a pág. 2 acaba incluída.
+        # O resultado [1, 2] aqui é o comportamento degradado esperado quando a
+        # lista de atos não é fornecida — contraste proposital com o teste acima,
+        # que com o próximo ato retorna [1].
         pg1 = ("PORTARIA NO 47, DE 12 DE JUNHO DE 2026\nART 1 ...\n"
                "EXTRATO DE CONTRATO\nCONTRATO NO 06/2026")
         pg2 = ("EXPEDIENTE\nPORTARIA NO 25, DE 15 DE JUNHO DE 2026\n...")

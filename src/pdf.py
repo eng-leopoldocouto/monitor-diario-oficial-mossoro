@@ -89,6 +89,9 @@ def _paginas_da_portaria(
 
     Inclui toda página cujo intervalo de texto [pg_start, pg_end) se sobrepõe a
     [start_pos, end_pos). `page_offsets` tem len == nº de páginas + 1 (sentinela).
+
+    Contrato: `start_pos` deve ser válido (>= 0, já localizado pelo chamador);
+    a função não revalida que `titulo_norm` ocorre em `start_pos`.
     """
     search_from = start_pos + len(titulo_norm)
 
