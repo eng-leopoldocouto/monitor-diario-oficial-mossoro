@@ -238,6 +238,12 @@ def _extrair_numero_teste(argv: list[str]) -> int | None:
 
 
 if __name__ == "__main__":
+    # --nova-sessao: abre uma sessão DESCARTÁVEL (perfil Chrome temporário, QR
+    # sempre exigido, nada persistido). Útil para logar com outro número sem
+    # afetar o perfil de produção. Ortogonal a --test (que só troca o grupo).
+    # Sem efeito em --agendar (execuções agendadas usam o perfil persistente).
+    sessao_descartavel = "--nova-sessao" in sys.argv
+
     # ── Modo teste ────────────────────────────────────────────────────────────
     # Acionado por: python monitor_diario_oficial.py --test [NÚMERO]
     # Sem número → edição mais recente. Com número (ex.: --test 839) → busca essa
@@ -245,7 +251,11 @@ if __name__ == "__main__":
     # (sempre reprocessa) e envia ao grupo de testes (WHATSAPP_GRUPO_TESTE), sem
     # alterar o rastreamento real no .env.
     if "--test" in sys.argv:
-        main(modo_teste=True, numero_diario=_extrair_numero_teste(sys.argv))
+        main(
+            modo_teste=True,
+            numero_diario=_extrair_numero_teste(sys.argv),
+            sessao_descartavel=sessao_descartavel,
+        )
     # ── Modo agendado (execução contínua) ────────────────────────────────────
     # Acionado APENAS por: python monitor_diario_oficial.py --agendar
     # HORARIO_EXECUCAO define o horário, mas NÃO ativa o modo sozinho.
@@ -257,4 +267,4 @@ if __name__ == "__main__":
     else:
         # ── Execução pontual (padrão) ────────────────────────────────────────
         # Roda uma única vez e encerra — modo correto para agendamento externo.
-        main()
+        main(sessao_descartavel=sessao_descartavel)

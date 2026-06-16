@@ -152,6 +152,22 @@ O modo de teste difere da execução normal em três pontos:
 > grupo de testes no WhatsApp. Se a variável não existir, o valor padrão
 > `TESTES SCRIPTs` é usado.
 
+### Sessão descartável (--nova-sessao)
+
+```bash
+python monitor_diario_oficial.py --nova-sessao
+```
+
+Abre o WhatsApp Web com um **perfil Chrome temporário e limpo** — o QR code é exigido toda vez e nada é persistido ao encerrar. O perfil de produção em `.whatsapp_profile/` permanece completamente intacto. Útil para autenticar com outro número do WhatsApp sem afetar a sessão em uso.
+
+A flag é **ortogonal a `--test`**: combinadas, o envio vai para o grupo de testes e a sessão ainda é descartável:
+
+```bash
+python monitor_diario_oficial.py --nova-sessao --test
+```
+
+> **Sem efeito com `--agendar`:** execuções agendadas sempre usam o perfil persistente (`.whatsapp_profile/`), independentemente de `--nova-sessao` estar presente.
+
 ---
 
 ## O que chega no WhatsApp
