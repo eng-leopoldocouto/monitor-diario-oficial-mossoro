@@ -228,7 +228,8 @@ def extrair_pdfs_por_ocorrencia(
             log.warning(f"Nenhuma página encontrada para '{titulo}' — ocorrência pulada.")
             continue
 
-        paginas_incluidas = sorted(set(paginas_incluidas))
+        # _paginas_da_portaria já devolve as páginas em ordem ascendente e sem
+        # repetição, então não é necessário reordenar/deduplicar aqui.
         nomes_log = ", ".join(nomes)
         # debug (não info) para não expor nomes (PII) no console
         log.debug(f"Páginas {paginas_incluidas} extraídas para [{nomes_log}].")
