@@ -1,5 +1,7 @@
 """Envio de mensagens e arquivos via WhatsApp Web (Selenium)."""
 import os
+import shutil
+import tempfile
 import time
 import ctypes
 import platform
@@ -352,6 +354,7 @@ def enviar_whatsapp(
     grupo: str,
     caminhos_pdf: list[str] = None,
     mensagem_apos_pdf: str = "",
+    sessao_descartavel: bool = False,
 ) -> bool:
     """
     Envia a mensagem para o grupo do WhatsApp via Selenium + WhatsApp Web.
@@ -366,35 +369,49 @@ def enviar_whatsapp(
     """
     log.info(f"Enviando mensagem para o grupo WhatsApp: '{grupo}'")
 
-    # ── Detecção de sessão e timeout de autenticação ─────────────────────────
-    sessao_valida = os.path.isdir(
-        os.path.join(
-            WHATSAPP_PROFILE_DIR,
-            "Default", "IndexedDB",
-            "https_web.whatsapp.com_0.indexeddb.leveldb",
-        )
-    )
-    timeout_auth = 30 if sessao_valida else TIMEOUT_QR_CODE
-    if not sessao_valida:
-        log.info(
-            "Sessão do WhatsApp não encontrada — Chrome abrirá para autenticação.\n"
-            f"Escaneie o QR code no WhatsApp do celular. "
-            f"Você tem {TIMEOUT_QR_CODE} segundos."
-        )
-
-    # ── Opções do Chrome ─────────────────────────────────────────────────────
-    options = webdriver.ChromeOptions()
-    options.add_argument(f"--user-data-dir={WHATSAPP_PROFILE_DIR}")
-    options.add_argument("--profile-directory=Default")
-    options.add_argument("--remote-allow-origins=*")
-    # NÃO usar --no-sandbox: o sandbox do Chrome é a principal camada de
-    # isolamento contra exploração via conteúdo web. Em desktop comum ele é
-    # desnecessário. Em container, rode como usuário não-root em vez de desligá-lo.
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-
+    # ── Perfil Chrome: persistente (produção) ou temporário (sessão descartável) ──
+    # perfil_temp != None somente no modo --nova-sessao; é criado dentro do try
+    # para que qualquer falha de criação caia no except/finally desta função.
+    perfil_temp = None
     driver = None
     try:
+        if sessao_descartavel:
+            perfil_temp = tempfile.mkdtemp(prefix="wa_qr_")
+            perfil_dir = perfil_temp
+            sessao_valida = False  # perfil limpo → QR sempre exigido
+            log.info(
+                "Modo nova sessão (descartável): perfil temporário limpo — "
+                f"o QR será exibido. Perfil: {perfil_temp}"
+            )
+        else:
+            perfil_dir = WHATSAPP_PROFILE_DIR
+            sessao_valida = os.path.isdir(
+                os.path.join(
+                    WHATSAPP_PROFILE_DIR,
+                    "Default", "IndexedDB",
+                    "https_web.whatsapp.com_0.indexeddb.leveldb",
+                )
+            )
+            if not sessao_valida:
+                log.info(
+                    "Sessão do WhatsApp não encontrada — Chrome abrirá para autenticação.\n"
+                    f"Escaneie o QR code no WhatsApp do celular. "
+                    f"Você tem {TIMEOUT_QR_CODE} segundos."
+                )
+
+        timeout_auth = 30 if sessao_valida else TIMEOUT_QR_CODE
+
+        # ── Opções do Chrome ─────────────────────────────────────────────────
+        options = webdriver.ChromeOptions()
+        options.add_argument(f"--user-data-dir={perfil_dir}")
+        options.add_argument("--profile-directory=Default")
+        options.add_argument("--remote-allow-origins=*")
+        # NÃO usar --no-sandbox: o sandbox do Chrome é a principal camada de
+        # isolamento contra exploração via conteúdo web. Em desktop comum ele é
+        # desnecessário. Em container, rode como usuário não-root em vez de desligá-lo.
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+
         if ChromeDriverManager is None:
             raise ImportError(
                 "webdriver-manager não instalado. "
@@ -613,3 +630,6 @@ def enviar_whatsapp(
     finally:
         if driver:
             driver.quit()
+        if perfil_temp:
+            shutil.rmtree(perfil_temp, ignore_errors=True)
+            log.info(f"Perfil temporário (sessão descartável) removido: {perfil_temp}")

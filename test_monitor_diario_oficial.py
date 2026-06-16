@@ -1188,6 +1188,71 @@ class TestEnviarWhatsapp:
         assert resultado is True
         mock_popup_btn.click.assert_called_once()
 
+    @_aplicar_patches
+    def test_sessao_descartavel_usa_perfil_temporario(
+        self, mock_chrome, mock_wait, mock_service, mock_cdm, mock_isdir, mock_sleep, mock_colar
+    ):
+        """Com sessao_descartavel, o --user-data-dir aponta para a pasta temporária."""
+        _setup_selenium_mocks(mock_chrome, mock_wait)
+        with patch(
+            "monitor_diario_oficial.whatsapp.tempfile.mkdtemp",
+            return_value="/tmp/wa_qr_fake",
+        ), patch("monitor_diario_oficial.whatsapp.shutil.rmtree") as mock_rmtree:
+            monitor.enviar_whatsapp("Msg", "Grupo", sessao_descartavel=True)
+
+        args = mock_chrome.call_args.kwargs["options"].arguments
+        assert "--user-data-dir=/tmp/wa_qr_fake" in args
+        assert all(
+            not a.startswith(f"--user-data-dir={monitor.WHATSAPP_PROFILE_DIR}")
+            for a in args
+        )
+
+    @_aplicar_patches
+    def test_sessao_descartavel_remove_perfil_temporario(
+        self, mock_chrome, mock_wait, mock_service, mock_cdm, mock_isdir, mock_sleep, mock_colar
+    ):
+        """A pasta temporária deve ser removida no finally."""
+        _setup_selenium_mocks(mock_chrome, mock_wait)
+        with patch(
+            "monitor_diario_oficial.whatsapp.tempfile.mkdtemp",
+            return_value="/tmp/wa_qr_fake",
+        ), patch("monitor_diario_oficial.whatsapp.shutil.rmtree") as mock_rmtree:
+            monitor.enviar_whatsapp("Msg", "Grupo", sessao_descartavel=True)
+
+        mock_rmtree.assert_called_once_with("/tmp/wa_qr_fake", ignore_errors=True)
+
+    @_aplicar_patches
+    def test_sessao_descartavel_forca_timeout_qr_code(
+        self, mock_chrome, mock_wait, mock_service, mock_cdm, mock_isdir, mock_sleep, mock_colar
+    ):
+        """sessao_descartavel força TIMEOUT_QR_CODE mesmo se isdir indicar sessão salva."""
+        mock_isdir.return_value = True  # haveria sessão salva, mas a flag deve ignorar
+        _setup_selenium_mocks(mock_chrome, mock_wait)
+        with patch(
+            "monitor_diario_oficial.whatsapp.tempfile.mkdtemp",
+            return_value="/tmp/wa_qr_fake",
+        ), patch("monitor_diario_oficial.whatsapp.shutil.rmtree"):
+            monitor.enviar_whatsapp("Msg", "Grupo", sessao_descartavel=True)
+
+        timeout_primeiro_wait = mock_wait.call_args_list[0][0][1]
+        assert timeout_primeiro_wait == monitor.TIMEOUT_QR_CODE
+
+    @_aplicar_patches
+    def test_sem_flag_usa_perfil_persistente(
+        self, mock_chrome, mock_wait, mock_service, mock_cdm, mock_isdir, mock_sleep, mock_colar
+    ):
+        """Sem a flag: usa WHATSAPP_PROFILE_DIR e não cria/remove pasta temporária."""
+        mock_isdir.return_value = True
+        _setup_selenium_mocks(mock_chrome, mock_wait)
+        with patch("monitor_diario_oficial.whatsapp.tempfile.mkdtemp") as mock_mkdtemp, \
+             patch("monitor_diario_oficial.whatsapp.shutil.rmtree") as mock_rmtree:
+            monitor.enviar_whatsapp("Msg", "Grupo")
+
+        args = mock_chrome.call_args.kwargs["options"].arguments
+        assert f"--user-data-dir={monitor.WHATSAPP_PROFILE_DIR}" in args
+        mock_mkdtemp.assert_not_called()
+        mock_rmtree.assert_not_called()
+
 
 # ══════════════════════════════════════════════════════════════
 # 7. _enviar_arquivos_no_grupo
