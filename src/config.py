@@ -35,7 +35,7 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   SECRETARIAS_MOSSORO  — secretarias monitoradas, separadas por vírgula    [opcional]
 #   TIMEOUT_QR_CODE      — segundos para escanear o QR code (padrão: 120)   [opcional]
 #   WHATSAPP_PROFILE_DIR — caminho do perfil Chrome para sessão WhatsApp     [opcional]
-#   LOG_DIR              — pasta de logs (padrão: mesma pasta do script)     [opcional]
+#   LOG_DIR              — pasta de logs (padrão: subpasta logs/)            [opcional]
 #   HORARIO_EXECUCAO     — horário HH:MM para --agendar (padrão: 05:00)     [opcional]
 # ─────────────────────────────────────────────
 
