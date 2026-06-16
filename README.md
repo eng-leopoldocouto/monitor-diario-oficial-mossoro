@@ -269,7 +269,7 @@ Todas podem ser adicionadas ao arquivo `.env`:
 |---|---|---|
 | `SECRETARIAS_MOSSORO` | Lista de secretarias monitoradas pela "Fofoca" (separadas por vírgula) | Todas as secretarias do município |
 | `WHATSAPP_PROFILE_DIR` | Caminho da pasta onde a sessão do WhatsApp é salva | `.whatsapp_profile/` ao lado do script |
-| `LOG_DIR` | Pasta onde o arquivo de log é gravado | Mesma pasta do script |
+| `LOG_DIR` | Pasta onde os arquivos de log são gravados (`producao.log`, `testes.log`) | Subpasta `logs/` ao lado do script |
 | `PDF_TEMP_DIR` | Pasta onde os PDFs recortados são salvos antes do envio | `pdfs_temporarios/` ao lado do script |
 | `WHATSAPP_GRUPO_TESTE` | Grupo de destino quando rodar com a flag `--test` | `TESTES SCRIPTs` |
 
@@ -291,8 +291,8 @@ Lei nº 13.709/2018 (LGPD). Resumo do tratamento:
   `WHATSAPP_GRUPO`. Restrinja esse grupo às pessoas estritamente necessárias.
 - **Armazenamento e retenção:** os dados não são gravados em banco. Há apenas
   artefatos **locais e temporários**: PDFs em `pdfs_temporarios/` (removidos após
-  o envio) e logs em `monitor_dom.log`. Recomenda-se **expurgar os logs
-  periodicamente** (ex.: a cada 30 dias), pois podem conter nomes.
+  o envio) e logs na pasta `logs/` (`producao.log` e `testes.log`). Recomenda-se
+  **expurgar os logs periodicamente** (ex.: a cada 30 dias), pois podem conter nomes.
 - **Dados sensíveis:** o arquivo `.env` (nomes monitorados e grupos) **não é
   versionado** e não deve ser compartilhado. Nunca inclua nomes reais no código,
   nos testes ou em qualquer arquivo versionado — use sempre dados fictícios.
@@ -327,7 +327,9 @@ Pastas criadas automaticamente durante o uso:
 ```
 ├── .whatsapp_profile/          # Sessão do Chrome/WhatsApp (não versionada)
 ├── pdfs_temporarios/           # PDFs gerados antes do envio (apagados após envio)
-└── monitor_dom.log             # Log de execução (rotativo, máx. 5 MB)
+└── logs/                       # Logs de execução (rotativos, máx. 5 MB cada)
+    ├── producao.log            # Execução normal
+    └── testes.log              # Execução com --test ou suíte pytest
 ```
 
 ---
@@ -376,7 +378,7 @@ Todos os testes rodam sem depender de internet, WhatsApp ou Chrome — usam dado
 - Inclua variantes com e sem acento: `JOSE SILVA,JOSÉ SILVA`.
 
 **O programa fecha sem enviar nada**
-- Verifique o arquivo `monitor_dom.log` — ele contém o detalhe completo de cada etapa.
+- Verifique o arquivo `logs/producao.log` (ou `logs/testes.log`, se rodou com `--test`) — ele contém o detalhe completo de cada etapa.
 
 **"Variável de ambiente obrigatória não definida"**
 - O arquivo `.env` não foi criado ou está faltando um dos campos obrigatórios (`NOMES_MONITORADOS`, `WHATSAPP_GRUPO`, `NOME_SALA`).
