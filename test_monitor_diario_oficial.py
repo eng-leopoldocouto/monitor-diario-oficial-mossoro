@@ -1086,18 +1086,23 @@ class TestEnviarWhatsapp:
         assert monitor.TIMEOUT_QR_CODE in timeouts
 
     @_aplicar_patches
-    def test_timeout_auth_30s_com_sessao_valida(
+    def test_login_gate_usa_timeout_qr_mesmo_com_perfil_no_disco(
         self, mock_chrome, mock_wait, mock_service, mock_cdm, mock_isdir, mock_sleep, mock_colar
     ):
-        """Com sessão válida do WhatsApp (IndexedDB presente), timeout é 30s."""
-        mock_isdir.return_value = True  # IndexedDB existe → sessão autenticada
+        """
+        Mesmo com o perfil salvo no disco (IndexedDB presente), o portão de login
+        concede o tempo completo TIMEOUT_QR_CODE. A pasta no disco NÃO garante
+        sessão autenticada (o WhatsApp pode ter deslogado o aparelho), então o
+        tempo de login nunca é encurtado com base nela. (Regressão do bug em que
+        a produção usava 30s e o QR não dava tempo de ser escaneado.)
+        """
+        mock_isdir.return_value = True  # pasta do perfil existe, mas pode estar deslogada
         _setup_selenium_mocks(mock_chrome, mock_wait)
 
         monitor.enviar_whatsapp("Mensagem", "Grupo")
 
-        # Com sessão válida, timeout_auth é 30s — a longa espera de QR não é usada.
         timeouts = [c.args[1] for c in mock_wait.call_args_list]
-        assert monitor.TIMEOUT_QR_CODE not in timeouts
+        assert monitor.TIMEOUT_QR_CODE in timeouts
 
     @_aplicar_patches
     def test_mensagem_colada_via_clipboard(

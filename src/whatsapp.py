@@ -443,7 +443,6 @@ def enviar_whatsapp(
         if sessao_descartavel:
             perfil_temp = tempfile.mkdtemp(prefix="wa_qr_")
             perfil_dir = perfil_temp
-            sessao_valida = False  # perfil limpo → QR sempre exigido
             log.info(
                 "Modo nova sessão (descartável): perfil temporário limpo — "
                 f"o QR será exibido. Perfil: {perfil_temp}"
@@ -464,7 +463,14 @@ def enviar_whatsapp(
                     f"Você tem {TIMEOUT_QR_CODE} segundos."
                 )
 
-        timeout_auth = 30 if sessao_valida else TIMEOUT_QR_CODE
+        # O tempo de login é SEMPRE TIMEOUT_QR_CODE. A presença do perfil no disco
+        # (sessao_valida) NÃO garante sessão autenticada — o WhatsApp pode ter
+        # deslogado o aparelho, exigindo um novo QR. Como o portão de login é por
+        # condição (retorna assim que a interface logada aparece), uma sessão já
+        # ativa resolve em <1s de qualquer forma; o timeout é apenas o limite máximo
+        # para escanear o QR, quando necessário. Encurtar para 30s aqui fazia a
+        # produção falhar quando a pasta existia mas a sessão havia expirado.
+        timeout_auth = TIMEOUT_QR_CODE
 
         # ── Opções do Chrome ─────────────────────────────────────────────────
         options = webdriver.ChromeOptions()
