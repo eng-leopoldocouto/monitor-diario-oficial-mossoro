@@ -2229,3 +2229,28 @@ class TestNomeArquivoLog:
     def test_pytest_carregado_usa_testes(self):
         """Com pytest em sys.modules → testes.log (suíte não polui produção)."""
         assert monitor.config._nome_arquivo_log(argv=["prog"], modulos={"pytest": object()}) == "testes.log"
+
+
+# ══════════════════════════════════════════════════════════════
+# 2c. _prox_ato_titulo e _paginas_da_portaria (detecção de páginas)
+# ══════════════════════════════════════════════════════════════
+
+class TestProxAtoTitulo:
+
+    def test_retorna_titulo_do_ato_seguinte(self):
+        p1 = {"titulo": "PORTARIA Nº 47,"}
+        p2 = {"titulo": "EXTRATO DE CONTRATO"}
+        portarias = [p1, p2]
+        assert monitor._prox_ato_titulo(p1, portarias) == "EXTRATO DE CONTRATO"
+
+    def test_ultimo_ato_retorna_none(self):
+        p1 = {"titulo": "PORTARIA Nº 47,"}
+        assert monitor._prox_ato_titulo(p1, [p1]) is None
+
+    def test_sem_lista_retorna_none(self):
+        assert monitor._prox_ato_titulo({"titulo": "X"}, None) is None
+
+    def test_objeto_ausente_na_lista_retorna_none(self):
+        p1 = {"titulo": "A"}
+        outros = [{"titulo": "B"}, {"titulo": "C"}]
+        assert monitor._prox_ato_titulo(p1, outros) is None

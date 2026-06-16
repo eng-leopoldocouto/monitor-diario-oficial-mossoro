@@ -53,6 +53,23 @@ def _sanitizar_nome_arquivo(nome: str) -> str:
     return limpo.strip(" .")
 
 
+def _prox_ato_titulo(portaria: dict, portarias: list[dict] | None) -> str | None:
+    """
+    Título do ato imediatamente seguinte a `portaria` na lista ORDENADA de atos
+    (a mesma que `extrair_portarias` produz, já segmentada via ato_separator).
+
+    Retorna None quando: a lista não foi fornecida, `portaria` é o último ato, ou
+    o objeto não está na lista. A comparação é por IDENTIDADE (`is`) — o dict da
+    ocorrência é o mesmo objeto inserido na lista por buscar_nomes_em_portarias.
+    """
+    if not portarias:
+        return None
+    for i, ato in enumerate(portarias):
+        if ato is portaria:
+            return portarias[i + 1]["titulo"] if i + 1 < len(portarias) else None
+    return None
+
+
 def extrair_pdfs_por_ocorrencia(url_pdf: str, ocorrencias: list[dict]) -> list[str]:
     """
     Baixa o PDF da publicação e gera um arquivo PDF separado para cada
