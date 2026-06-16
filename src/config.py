@@ -115,8 +115,9 @@ BASE_URL = "https://dom.mossoro.rn.gov.br"
 _profile_padrao = os.path.join(_BASE_DIR, ".whatsapp_profile")
 WHATSAPP_PROFILE_DIR: str = os.environ.get("WHATSAPP_PROFILE_DIR", _profile_padrao)
 
-# Pasta de logs (padrão: mesma pasta do script).
-LOG_DIR: str = os.environ.get("LOG_DIR", _BASE_DIR)
+# Pasta de logs (padrão: subpasta "logs" ao lado do script).
+# Os nomes dos arquivos (producao.log / testes.log) são escolhidos em _nome_arquivo_log.
+LOG_DIR: str = os.environ.get("LOG_DIR", os.path.join(_BASE_DIR, "logs"))
 
 # Pasta para PDFs temporários gerados durante o fatiamento do Diário Oficial.
 # Configurável via PDF_TEMP_DIR no .env; padrão: "pdfs_temporarios" ao lado do script.
@@ -127,6 +128,23 @@ PDF_TEMP_DIR: str = os.environ.get("PDF_TEMP_DIR", _pdf_temp_padrao)
 # ─────────────────────────────────────────────
 # CONFIGURAÇÃO DE LOG
 # ─────────────────────────────────────────────
+
+def _nome_arquivo_log(argv=None, modulos=None) -> str:
+    """
+    Escolhe o arquivo de log conforme o modo de execução.
+
+    - Execução com a flag --test OU sob a suíte pytest → "testes.log"
+      (evita poluir o log de produção com ruído de teste).
+    - Caso contrário → "producao.log".
+
+    argv/modulos são injetáveis para permitir teste puro (sem tocar no
+    filesystem); por padrão usam os globais reais sys.argv / sys.modules.
+    """
+    argv = sys.argv if argv is None else argv
+    modulos = sys.modules if modulos is None else modulos
+    em_teste = ("--test" in argv) or ("pytest" in modulos)
+    return "testes.log" if em_teste else "producao.log"
+
 
 def configurar_logging() -> logging.Logger:
     """
@@ -161,7 +179,7 @@ def configurar_logging() -> logging.Logger:
     )
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(PDF_TEMP_DIR, exist_ok=True)
-    log_path = os.path.join(LOG_DIR, "monitor_dom.log")
+    log_path = os.path.join(LOG_DIR, _nome_arquivo_log())
     arquivo_handler = logging.handlers.RotatingFileHandler(
         log_path,
         maxBytes=5 * 1024 * 1024,  # 5 MB

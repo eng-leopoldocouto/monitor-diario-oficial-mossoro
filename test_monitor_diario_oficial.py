@@ -2014,3 +2014,22 @@ class TestExtrairNumeroTeste:
 
     def test_sem_flag_test_retorna_none(self):
         assert monitor._extrair_numero_teste(["prog"]) is None
+
+
+# ══════════════════════════════════════════════════════════════
+# 12. _nome_arquivo_log — escolhe producao.log vs testes.log
+# ══════════════════════════════════════════════════════════════
+
+class TestNomeArquivoLog:
+
+    def test_execucao_normal_usa_producao(self):
+        """Sem --test e sem pytest carregado → producao.log."""
+        assert monitor.config._nome_arquivo_log(argv=["prog"], modulos={}) == "producao.log"
+
+    def test_flag_test_usa_testes(self):
+        """Com --test no argv → testes.log."""
+        assert monitor.config._nome_arquivo_log(argv=["prog", "--test"], modulos={}) == "testes.log"
+
+    def test_pytest_carregado_usa_testes(self):
+        """Com pytest em sys.modules → testes.log (suíte não polui produção)."""
+        assert monitor.config._nome_arquivo_log(argv=["prog"], modulos={"pytest": object()}) == "testes.log"
