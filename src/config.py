@@ -204,12 +204,12 @@ log = configurar_logging()
 
 def _atualizar_env(chave: str, valor: str) -> None:
     """
-    Atualiza ou insere uma chave no arquivo .env ao lado do script.
+    Atualiza ou insere uma chave no arquivo .env da raiz do projeto.
 
     - Se a chave já existe (linha não comentada), substitui o valor.
     - Se não existe, acrescenta ao final do arquivo.
     """
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    env_path = os.path.join(_BASE_DIR, ".env")
     if not os.path.isfile(env_path):
         log.warning(f"Arquivo .env não encontrado em: {env_path} — valor não salvo.")
         return

@@ -2379,3 +2379,34 @@ class TestPaginasDaPortaria:
             "PORTARIA NO 100,", all_port,  # 100 não aparece no texto
         )
         assert pgs == [1, 2]
+
+
+# ══════════════════════════════════════════════════════════════
+# 13. _atualizar_env — persiste chaves no .env da RAIZ do projeto
+# ══════════════════════════════════════════════════════════════
+
+class TestAtualizarEnv:
+
+    def test_atualiza_chave_no_env_da_raiz(self, tmp_path):
+        """O .env fica na raiz do projeto (_BASE_DIR), não em src/.
+
+        load_dotenv lê o .env da raiz; a gravação deve usar o mesmo arquivo,
+        senão ULTIMO_DOM_NUMERO nunca é persistido.
+        """
+        env_file = tmp_path / ".env"
+        env_file.write_text("ULTIMO_DOM_NUMERO=800\n", encoding="utf-8")
+
+        with patch.object(monitor.config, "_BASE_DIR", str(tmp_path)):
+            monitor.config._atualizar_env("ULTIMO_DOM_NUMERO", "815")
+
+        assert env_file.read_text(encoding="utf-8") == "ULTIMO_DOM_NUMERO=815\n"
+
+    def test_acrescenta_chave_ausente_no_env_da_raiz(self, tmp_path):
+        """Chave inexistente é adicionada ao final do .env da raiz."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("OUTRA=1\n", encoding="utf-8")
+
+        with patch.object(monitor.config, "_BASE_DIR", str(tmp_path)):
+            monitor.config._atualizar_env("ULTIMO_DOM_NUMERO", "815")
+
+        assert env_file.read_text(encoding="utf-8") == "OUTRA=1\nULTIMO_DOM_NUMERO=815\n"
