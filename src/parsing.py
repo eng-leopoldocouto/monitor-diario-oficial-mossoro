@@ -520,11 +520,15 @@ def _extrair_funcao_contrato(conteudo: str, nome: str) -> tuple[str, str | None]
     texto = " ".join(conteudo.upper().split())
     nome_up = " ".join(nome.upper().split())
 
+    # "DO CONTRATO" e "DE CONTRATO" ocorrem no DOM; pode haver vírgula entre
+    # "CONTRATO" e o número (ex.: "GESTOR DO CONTRATO, nº 05/2025").
     re_papel = re.compile(
-        r'PARA ATUAR COMO\s+(GESTOR[A]?|FISCAL)\s+DO\s+CONTRATO\s+'
+        r'PARA ATUAR COMO\s+(GESTOR[A]?|FISCAL)\s+D[EO]\s+CONTRATO\s*,?\s*'
         r'N[°ºO.]*\s*(\d+\s*/\s*\d+)'
     )
-    re_subst = re.compile(r'SUBSTITUT[OA]\s+EVENTUAL')
+    # O qualificador "eventual" aparece nas duas ordens no DOM:
+    # "substituto eventual" e "eventual substituto".
+    re_subst = re.compile(r'SUBSTITUT[OA]\s+EVENTUAL|EVENTUAL\s+SUBSTITUT[OA]')
 
     # Blocos: um por "DESIGNAR"
     indices = [m.start() for m in re.finditer(r'\bDESIGNAR\b', texto)]

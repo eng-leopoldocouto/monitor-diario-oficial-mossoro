@@ -993,6 +993,39 @@ class TestExtrairFuncaoContrato:
         f, c = monitor._extrair_funcao_contrato(self._cont_gestor_fiscal(), "PESSOA INEXISTENTE")
         assert f == "função não identificada"
 
+    # ---- variações reais do DOM Nº 160 (publicação 1880) ----
+    #
+    # Formatos observados no Diário que o padrão original não cobria:
+    #   1. vírgula entre "CONTRATO" e o número: "GESTOR DO CONTRATO, nº 05/2025"
+    #   2. "DE CONTRATO" em vez de "DO CONTRATO": "FISCAL DE CONTRATO"
+    #   3. ordem "eventual substituto" em vez de "substituto eventual"
+
+    def _cont_dom_160(self):
+        return (
+            "RESOLVE:\n"
+            "Art. 1º Designar a servidora CARLA VANNESSA DA ROCHA matrícula nº 0536482, "
+            "para atuar como GESTOR DO CONTRATO, nº 05/2025, firmado entre o FUNDO "
+            "MUNICIPAL DE SAÚDE e R R CONSTRUÇÕES, tendo como eventual substituto "
+            "ALAERDSON NASCIMENTO DE LIMA matrícula nº 5096847-2.\n"
+            "Art. 2º São atribuições do gestor do contrato:\n"
+            "Art. 3° Designar o servidor DEIVISON TAEMY DIAS DA SILVA matrícula nº 5110069/01, "
+            "para atuar como FISCAL DE CONTRATO, nº 16/2024, firmado entre o FUNDO MUNICIPAL "
+            "DE SAÚDE, tendo como eventual substituído FRANCISCO GUEDES DA COSTA NETO "
+            "matrícula nº 5082552."
+        )
+
+    def test_gestor_titular_com_virgula_antes_do_numero(self):
+        f, c = monitor._extrair_funcao_contrato(self._cont_dom_160(), "CARLA VANNESSA DA ROCHA")
+        assert f == "Gestor" and c == "05/2025"
+
+    def test_fiscal_titular_com_de_contrato(self):
+        f, c = monitor._extrair_funcao_contrato(self._cont_dom_160(), "DEIVISON TAEMY DIAS DA SILVA")
+        assert f == "Fiscal" and c == "16/2024"
+
+    def test_gestor_substituto_ordem_eventual_substituto(self):
+        f, c = monitor._extrair_funcao_contrato(self._cont_dom_160(), "ALAERDSON NASCIMENTO DE LIMA")
+        assert f == "Gestor Substituto" and c == "05/2025"
+
 
 class TestExtrairParticipacao:
     """
