@@ -120,6 +120,8 @@ python monitor_diario_oficial.py --agendar
 
 O programa fica ativo em segundo plano, executa no horário configurado e aguarda o próximo dia. Se o horário do dia já tiver passado quando você iniciar, ele executa imediatamente e depois aguarda o dia seguinte.
 
+> **Resiliência:** se uma execução falhar (erro de rede, site fora do ar, falha no WhatsApp Web), o erro é registrado no log e o agendamento **continua** — a próxima execução ocorre normalmente no dia seguinte, sem derrubar o processo.
+
 > **Dica para Windows:** use o **Agendador de Tarefas** do Windows para iniciar o script automaticamente no boot da máquina, sem precisar deixar um terminal aberto.
 
 ### Modo de teste
@@ -140,13 +142,15 @@ python monitor_diario_oficial.py --test 839
 
 O script procura na listagem do site a edição `DOM Nº 839`, resolve a URL correta da publicação e processa essa edição (enviando ao grupo de testes, como qualquer `--test`). Se o número não existir, o script avisa e encerra sem enviar nada.
 
+> 💡 Veja [`docs/edicoes-exemplo.md`](docs/edicoes-exemplo.md) para uma lista de edições reais com características conhecidas (nº de ocorrências, PDFs, fofocas, ponto facultativo) — útil para testar cada caminho do código.
+
 O modo de teste difere da execução normal em três pontos:
 
 | | Execução normal | `--test` |
 |---|---|---|
 | Grupo de destino | `WHATSAPP_GRUPO` | `WHATSAPP_GRUPO_TESTE` |
 | Edição reprocessada? | Não (pula se já monitorada) | Sim (ignora `ULTIMO_DOM_NUMERO`) |
-| Atualiza `ULTIMO_DOM_NUMERO` no `.env`? | Sim | Não |
+| Atualiza `ULTIMO_DOM_NUMERO` no `.env`? | Sim (somente após o envio ser bem-sucedido) | Não |
 
 > Para usar, configure `WHATSAPP_GRUPO_TESTE` no `.env` com o nome **exato** do
 > grupo de testes no WhatsApp. Se a variável não existir, o valor padrão
@@ -313,6 +317,7 @@ monitor-diario-oficial-mossoro/
 │   ├── pdf.py                  # Download e fatiamento de PDFs por ocorrência
 │   └── whatsapp.py             # Envio de mensagens e arquivos via WhatsApp Web
 ├── test_monitor_diario_oficial.py  # Testes automatizados
+├── docs/                       # Documentação auxiliar (ex.: edições de exemplo)
 ├── requirements.txt            # Dependências Python
 ├── .env.example                # Modelo de configuração (versão pública)
 ├── .env                        # Sua configuração real (não versionado)
@@ -322,15 +327,22 @@ monitor-diario-oficial-mossoro/
 O comando de execução não muda: `monitor_diario_oficial.py` continua sendo o
 ponto de entrada e reexporta toda a API pública dos módulos em `src/`.
 
-Pastas criadas automaticamente durante o uso:
+Pastas e arquivos criados automaticamente durante o uso:
 
 ```
 ├── .whatsapp_profile/          # Sessão do Chrome/WhatsApp (não versionada)
 ├── pdfs_temporarios/           # PDFs gerados antes do envio (apagados após envio)
+├── .envio_estado.json          # Progresso de envio por edição (idempotência; regenerável)
 └── logs/                       # Logs de execução (rotativos, máx. 5 MB cada)
     ├── producao.log            # Execução normal
     └── testes.log              # Execução com --test ou suíte pytest
 ```
+
+> **Idempotência:** o `.envio_estado.json` registra quais etapas (texto/PDFs/fofoca)
+> já foram enviadas em cada edição. Se uma execução falhar no meio (ex.: o PDF não
+> sobe), a próxima execução reenvia **apenas o que faltou**, sem duplicar a
+> mensagem de texto já entregue. Não contém dados pessoais (só número da edição e
+> rótulos de etapa) e pode ser apagado a qualquer momento.
 
 ---
 
@@ -340,20 +352,20 @@ Todas as dependências são instaladas automaticamente pelo `pip install -r requ
 
 | Biblioteca | Versão mínima | Para que serve |
 |---|---|---|
-| [requests](https://docs.python-requests.org/) | 2.31.0 | Faz as requisições HTTP ao site do Diário Oficial para baixar as páginas e o PDF |
-| [beautifulsoup4](https://www.crummy.com/software/BeautifulSoup/) | 4.12.0 | Analisa o HTML das páginas do DOM para extrair links, títulos e conteúdo dos atos |
-| [selenium](https://www.selenium.dev/) | 4.18.0 | Controla o Chrome automaticamente para abrir o WhatsApp Web e enviar mensagens e arquivos |
-| [webdriver-manager](https://github.com/SergeyPirogov/webdriver_manager) | 4.0.0 | Baixa e gerencia automaticamente a versão correta do ChromeDriver (sem instalação manual) |
-| [pypdf](https://pypdf.readthedocs.io/) | 4.0.0 | Lê e recorta o PDF do Diário Oficial, extraindo apenas as páginas de cada portaria |
-| [python-dotenv](https://github.com/theskumar/python-dotenv) | 1.0.0 | Carrega as configurações do arquivo `.env` para as variáveis de ambiente do programa |
+| [requests](https://docs.python-requests.org/) | 2.32.5 | Faz as requisições HTTP ao site do Diário Oficial para baixar as páginas e o PDF |
+| [beautifulsoup4](https://www.crummy.com/software/BeautifulSoup/) | 4.14.3 | Analisa o HTML das páginas do DOM para extrair links, títulos e conteúdo dos atos |
+| [selenium](https://www.selenium.dev/) | 4.43.0 | Controla o Chrome automaticamente para abrir o WhatsApp Web e enviar mensagens e arquivos |
+| [webdriver-manager](https://github.com/SergeyPirogov/webdriver_manager) | 4.0.2 | Baixa e gerencia automaticamente a versão correta do ChromeDriver (sem instalação manual) |
+| [pypdf](https://pypdf.readthedocs.io/) | 6.10.2 | Lê e recorta o PDF do Diário Oficial, extraindo apenas as páginas de cada portaria |
+| [python-dotenv](https://github.com/theskumar/python-dotenv) | 1.2.2 | Carrega as configurações do arquivo `.env` para as variáveis de ambiente do programa |
 
-> As bibliotecas `io`, `os`, `re`, `sys`, `time`, `logging`, `platform` e `unicodedata` são nativas do Python — não precisam ser instaladas.
+> As bibliotecas `io`, `os`, `re`, `sys`, `time`, `json`, `logging`, `logging.handlers`, `contextlib`, `platform` e `unicodedata` são nativas do Python — não precisam ser instaladas.
 
 ---
 
 ## Rodando os testes
 
-O projeto possui 183 testes automatizados. Para executá-los:
+O projeto possui 216 testes automatizados. Para executá-los:
 
 ```bash
 pip install pytest
@@ -409,7 +421,7 @@ git checkout -b minha-melhoria
 pytest test_monitor_diario_oficial.py -v
 ```
 
-Todos os 183 testes devem passar antes de abrir o Pull Request. Se você adicionar uma nova funcionalidade, adicione também o teste correspondente.
+Todos os 216 testes devem passar antes de abrir o Pull Request. Se você adicionar uma nova funcionalidade, adicione também o teste correspondente.
 
 ### 4. Envie o Pull Request
 
