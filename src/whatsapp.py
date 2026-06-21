@@ -12,19 +12,46 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import ElementClickInterceptedException
+from selenium.common.exceptions import (
+    ElementClickInterceptedException, StaleElementReferenceException,
+    ElementNotInteractableException,
+)
 
 try:
     from webdriver_manager.chrome import ChromeDriverManager
 except ImportError:
     ChromeDriverManager = None  # type: ignore
 
-from .config import log, WHATSAPP_PROFILE_DIR, TIMEOUT_QR_CODE
+from .config import (
+    log, WHATSAPP_PROFILE_DIR, TIMEOUT_QR_CODE,
+    etapas_enviadas, marcar_etapa_enviada,
+)
 
 
 # ─────────────────────────────────────────────
 # UTILITÁRIOS INTERNOS
 # ─────────────────────────────────────────────
+
+class _Cronometro:
+    """Mede o tempo entre marcos do envio, para diagnosticar lentidão e falhas.
+
+    Cada marco loga o tempo desde o marco anterior e o total acumulado. Combinado
+    com o traceback (exc_info do except), mostra até onde o fluxo chegou e quanto
+    cada fase levou — sem isso, "está lento/falhando às vezes" fica sem evidência.
+    """
+
+    def __init__(self):
+        self._t0 = time.monotonic()
+        self._ultimo = self._t0
+
+    def marco(self, nome: str) -> None:
+        agora = time.monotonic()
+        log.info(
+            f"⏱️  fase '{nome}': +{agora - self._ultimo:.1f}s "
+            f"(total {agora - self._t0:.1f}s)"
+        )
+        self._ultimo = agora
+
 
 def _colar_windows(elemento, texto: str) -> None:
     """
@@ -49,14 +76,24 @@ def _colar_windows(elemento, texto: str) -> None:
     u32.SetClipboardData.restype = ctypes.c_void_p
     u32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
 
-    u32.OpenClipboard(None)
-    u32.EmptyClipboard()
-    handle = k32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
-    ptr = k32.GlobalLock(handle)
-    ctypes.memmove(ptr, encoded, len(encoded))
-    k32.GlobalUnlock(handle)
-    u32.SetClipboardData(CF_UNICODETEXT, handle)
-    u32.CloseClipboard()
+    if not u32.OpenClipboard(None):
+        raise OSError("OpenClipboard falhou — clipboard indisponível no momento.")
+    try:
+        u32.EmptyClipboard()
+        handle = k32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
+        if not handle:
+            raise MemoryError("GlobalAlloc retornou NULL ao copiar para o clipboard.")
+        ptr = k32.GlobalLock(handle)
+        if not ptr:
+            raise MemoryError("GlobalLock retornou NULL ao copiar para o clipboard.")
+        ctypes.memmove(ptr, encoded, len(encoded))
+        k32.GlobalUnlock(handle)
+        u32.SetClipboardData(CF_UNICODETEXT, handle)
+    finally:
+        # Garante a liberação do clipboard mesmo em erro; caso contrário ele fica
+        # travado para todo o processo e chamadas seguintes (próprias/de outros
+        # apps) falham.
+        u32.CloseClipboard()
 
     elemento.click()
     elemento.send_keys(Keys.CONTROL, "v")
@@ -142,6 +179,50 @@ def _colar_no_elemento(driver, elemento, texto: str) -> None:
     elemento.send_keys(texto)
 
 
+def _aguardar_retorno_ao_chat(driver, timeout: int = 10) -> None:
+    """Após enviar um anexo, espera a pré-visualização fechar e o campo de
+    mensagem do chat reaparecer — sinal de que o envio foi efetivado.
+
+    Substitui um sleep fixo: retorna assim que o composer volta (rápido no caso
+    normal) e, se não voltar a tempo, segue mesmo assim (best-effort, nunca lança).
+    """
+    try:
+        WebDriverWait(driver, timeout).until(
+            EC.element_to_be_clickable((
+                By.XPATH,
+                '//div[@contenteditable="true"][@data-tab="10"] '
+                '| //div[@role="textbox"][@data-tab="10"]',
+            ))
+        )
+    except Exception:
+        log.debug("Campo de mensagem não reapareceu no tempo esperado após o anexo — seguindo.")
+
+
+def _aguardar_envio_concluido(driver, timeout: int = 12) -> None:
+    """Espera as mensagens pendentes terminarem de enviar antes de fechar o Chrome.
+
+    O WhatsApp Web mostra um relógio (data-icon contendo 'time') enquanto a
+    mensagem/anexo está pendente; ele some quando o servidor confirma o envio.
+    Fechar o navegador antes disso interrompe o envio do último PDF/mensagem
+    (sintoma: "fecha rápido demais e não confirma").
+
+    Garante um mínimo de segurança (o relógio precisa aparecer antes de checarmos)
+    e, se não confirmar dentro do timeout, segue mesmo assim (best-effort).
+    """
+    # Mínimo: dá tempo de o estado "pendente" renderizar; sem isso poderíamos
+    # checar antes do relógio aparecer e concluir cedo demais.
+    time.sleep(3)
+    try:
+        WebDriverWait(driver, timeout).until_not(
+            EC.presence_of_element_located(
+                (By.XPATH, '//span[contains(@data-icon,"time")]')
+            )
+        )
+        log.info("Envio confirmado — sem mensagens pendentes.")
+    except Exception:
+        log.warning("Ainda havia mensagem pendente ao fim do tempo de espera — seguindo.")
+
+
 def _enviar_arquivos_no_grupo(driver, caminhos_pdf: list) -> None:
     """
     Envia um ou mais arquivos PDF para o grupo já aberto no WhatsApp Web,
@@ -159,19 +240,23 @@ def _enviar_arquivos_no_grupo(driver, caminhos_pdf: list) -> None:
         return
     log.info(f"Enviando {len(caminhos_abs)} PDF(s) de uma vez: {[os.path.basename(p) for p in caminhos_abs]}")
 
-    # Localiza o botão de anexar (ícone de clipe)
+    # Localiza o botão de anexar (ícone de clipe). Ordem pelo seletor CONFIRMADO no
+    # WhatsApp Web atual (2026): botão "Anexar" por aria-label. Os antigos
+    # (data-testid="clip", title="Attach"/"Anexar") viraram fallback — antes vinham
+    # primeiro e custavam ~5s cada em timeout (~20s perdidos por envio). Fallback
+    # com timeout curto para não somar segundos caso o 1º seletor mude.
     xpaths_clipe = [
-        '//span[@data-testid="clip"]',
-        '//div[@title="Attach"]',
-        '//div[@title="Anexar"]',
-        '//button[contains(@aria-label,"Attach")]',
         '//button[contains(@aria-label,"nexar")]',
+        '//button[contains(@aria-label,"Attach")]',
         '//div[contains(@aria-label,"nexar")]',
+        '//span[@data-testid="clip"]',
+        '//div[@title="Anexar"]',
+        '//div[@title="Attach"]',
     ]
     btn_clipe = None
-    for xpath in xpaths_clipe:
+    for i, xpath in enumerate(xpaths_clipe):
         try:
-            btn_clipe = WebDriverWait(driver, 5).until(
+            btn_clipe = WebDriverWait(driver, 5 if i == 0 else 2).until(
                 EC.element_to_be_clickable((By.XPATH, xpath))
             )
             log.info(f"Botão de anexar encontrado: {xpath}")
@@ -215,8 +300,8 @@ def _enviar_arquivos_no_grupo(driver, caminhos_pdf: list) -> None:
         log.warning(f"Opção 'Documentos' não encontrada (tentativa {tentativa}/{_MAX_TENTATIVAS_DOCS}) — fechando submenu e tentando novamente.")
         try:
             driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"Falha ao enviar ESC para fechar submenu (ignorado): {e}")
         time.sleep(2)
 
     if not clicou_documentos:
@@ -263,9 +348,14 @@ def _enviar_arquivos_no_grupo(driver, caminhos_pdf: list) -> None:
     )
     input_arquivo.send_keys("\n".join(caminhos_abs))
     log.info(f"{len(caminhos_abs)} caminho(s) enviado(s) ao input.")
-    espera_preview = 8 + max(0, (len(caminhos_abs) - 1) * 2)  # +2s por arquivo extra
-    log.info(f"Aguardando pré-visualização ({espera_preview}s)...")
-    time.sleep(espera_preview)
+    # Folga curta só para o upload começar a renderizar; a espera REAL pela
+    # pré-visualização fica por conta do WebDriverWait do botão de enviar (abaixo),
+    # que faz polling até o botão ficar clicável — adaptativo e mais robusto que um
+    # sleep fixo. O teto do wait escala com a quantidade de arquivos (preview mais
+    # lenta com mais anexos), substituindo o antigo "8s + 2s por arquivo".
+    time.sleep(1)
+    timeout_envio = 10 + max(0, (len(caminhos_abs) - 1) * 2)
+    log.info("Aguardando pré-visualização e o botão de enviar...")
 
     # Clica no botão de enviar da pré-visualização do anexo.
     # Seletor confirmado via inspeção do DOM real do WhatsApp Web (2025):
@@ -286,12 +376,12 @@ def _enviar_arquivos_no_grupo(driver, caminhos_pdf: list) -> None:
     ]
     for xpath in xpaths_enviar:
         try:
-            btn_enviar = WebDriverWait(driver, 10).until(
+            btn_enviar = WebDriverWait(driver, timeout_envio).until(
                 EC.element_to_be_clickable((By.XPATH, xpath))
             )
             btn_enviar.click()
             log.info(f"{len(caminhos_abs)} PDF(s) enviado(s) com sucesso! (via {xpath})")
-            time.sleep(3)
+            _aguardar_retorno_ao_chat(driver)
             return
         except Exception:
             pass
@@ -323,7 +413,7 @@ def _enviar_arquivos_no_grupo(driver, caminhos_pdf: list) -> None:
         """)
         if enviado:
             log.info(f"{len(caminhos_abs)} PDF(s) enviado(s) com sucesso via JavaScript fallback (seletor: {enviado}).")
-            time.sleep(3)
+            _aguardar_retorno_ao_chat(driver)
             return
     except Exception as e:
         log.warning(f"Fallback JavaScript falhou: {e}")
@@ -364,7 +454,7 @@ def _fechar_dialogos_sobrepostos(driver) -> bool:
     não atrasar o fluxo normal (sem pop-up).
     """
     try:
-        WebDriverWait(driver, 3).until(
+        WebDriverWait(driver, 1.5).until(
             EC.presence_of_element_located((By.XPATH, '//div[@role="dialog"]'))
         )
     except Exception:
@@ -387,17 +477,21 @@ def _fechar_dialogos_sobrepostos(driver) -> bool:
         '//div[@role="dialog"]//div[@aria-label="Fechar"]',
         '//div[@role="dialog"]//div[@aria-label="Close"]',
     ]
+    # O diálogo já foi detectado (os botões já estão na tela): testa cada xpath
+    # com find_elements (instantâneo), na ordem de prioridade, em vez de um
+    # WebDriverWait de 2s POR xpath — que somava muitos segundos quando o botão
+    # certo estava no fim da lista.
     for xpath in botoes_fechar_popup:
-        try:
-            botao = WebDriverWait(driver, 2).until(
-                EC.element_to_be_clickable((By.XPATH, xpath))
-            )
-            log.info(f"Fechando pop-up via: {xpath}")
-            botao.click()
-            time.sleep(1)
-            return True
-        except Exception:
-            continue
+        for botao in driver.find_elements(By.XPATH, xpath):
+            if not (botao.is_displayed() and botao.is_enabled()):
+                continue
+            try:
+                log.info(f"Fechando pop-up via: {xpath}")
+                botao.click()
+                time.sleep(0.5)
+                return True
+            except Exception:
+                continue
 
     # Nenhum botão conhecido funcionou; tenta dispensar com ESC
     log.warning(
@@ -406,7 +500,7 @@ def _fechar_dialogos_sobrepostos(driver) -> bool:
     )
     try:
         webdriver.ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-        time.sleep(1)
+        time.sleep(0.5)
     except Exception:
         log.warning("Não foi possível fechar o diálogo automaticamente.")
     return True
@@ -415,9 +509,10 @@ def _fechar_dialogos_sobrepostos(driver) -> bool:
 def enviar_whatsapp(
     mensagem: str,
     grupo: str,
-    caminhos_pdf: list[str] = None,
+    caminhos_pdf: list[str] | None = None,
     mensagem_apos_pdf: str = "",
     sessao_descartavel: bool = False,
+    id_edicao=None,
 ) -> bool:
     """
     Envia a mensagem para o grupo do WhatsApp via Selenium + WhatsApp Web.
@@ -431,7 +526,24 @@ def enviar_whatsapp(
     O perfil Chrome (sessão WhatsApp) é salvo em WHATSAPP_PROFILE_DIR.
     Se sessao_descartavel=True, usa um perfil Chrome temporário e descartável
     (QR sempre exigido, nada persistido); o perfil de produção fica intacto.
+
+    Idempotência: quando id_edicao é informado (fora do modo teste), cada etapa
+    (texto/pdfs/fofoca) é registrada em disco assim que concluída. Num retry da
+    MESMA edição, as etapas já confirmadas são puladas — evitando, p.ex.,
+    reenviar o texto quando apenas o anexo PDF falhou na execução anterior.
     """
+    # Etapas requeridas nesta chamada e o que já foi confirmado em execuções
+    # anteriores. Se tudo já foi enviado, encerra sem nem abrir o Chrome.
+    etapas_feitas = etapas_enviadas(id_edicao)
+    requeridas = {"texto"}
+    if caminhos_pdf:
+        requeridas.add("pdfs")
+    if mensagem_apos_pdf:
+        requeridas.add("fofoca")
+    if id_edicao is not None and requeridas <= etapas_feitas:
+        log.info(f"Edição {id_edicao}: todas as etapas já enviadas — nada a reenviar.")
+        return True
+
     log.info(f"Enviando mensagem para o grupo WhatsApp: '{grupo}'")
 
     # ── Perfil Chrome: persistente (produção) ou temporário (sessão descartável) ──
@@ -490,11 +602,14 @@ def enviar_whatsapp(
             )
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
+        crono = _Cronometro()
 
         wait_curto = WebDriverWait(driver, 30)
 
         driver.get("https://web.whatsapp.com")
-        time.sleep(3)
+        # Sem sleep fixo: driver.get já retorna com a página carregada e o render
+        # assíncrono do SPA é coberto pelos WebDriverWait abaixo (detecção do QR e,
+        # em seguida, o portão de login por #pane-side), que fazem polling.
         log.info("Aguardando interface do WhatsApp Web...")
 
         # ── Detecção do QR (apenas informativa) ──────────────────────────────
@@ -527,23 +642,28 @@ def enviar_whatsapp(
                 )
             )
             log.info("Sessão do WhatsApp ativa (logado).")
-        except Exception:
-            raise Exception(
+            crono.marco("login (abrir + autenticar)")
+        except Exception as e:
+            raise RuntimeError(
                 f"Login no WhatsApp Web não confirmado em {timeout_auth}s. "
                 "Se o QR estava visível, ele não foi escaneado a tempo."
-            )
+            ) from e
 
         # Detecta e dispensa o diálogo "WhatsApp aberto em outra janela"
         # (aparece quando o mesmo número já está ativo em outra aba/perfil)
+        # Timeout curto: se houver conflito, o diálogo já está renderizado logo
+        # após o portão de login — não vale esperar 8s por algo que quase nunca
+        # aparece. Se escapar, há defesa em profundidade adiante (fechamento de
+        # diálogos sobrepostos + retry de clique interceptado na busca).
         try:
-            btn_usar = WebDriverWait(driver, 8).until(
+            btn_usar = WebDriverWait(driver, 2).until(
                 EC.element_to_be_clickable(
                     (By.XPATH, '//button[contains(normalize-space(),"Usar nesta janela")]')
                 )
             )
             log.info("Diálogo 'aberto em outra janela' detectado — clicando em 'Usar nesta janela'.")
             btn_usar.click()
-            time.sleep(3)
+            time.sleep(1)
         except Exception:
             log.info("Sem diálogo de conflito de sessão.")
 
@@ -585,6 +705,7 @@ def enviar_whatsapp(
             )
 
         log.info("WhatsApp Web autenticado e pronto.")
+        crono.marco("diálogos + caixa de busca")
 
         # Pesquisa o grupo pelo nome (via clipboard — evita erro de emoji no send_keys).
         # Defesa em profundidade: se um diálogo tardio interceptar o clique, fecha
@@ -599,59 +720,92 @@ def enviar_whatsapp(
             )
             _fechar_dialogos_sobrepostos(driver)
             _colar_no_elemento(driver, caixa_pesquisa, grupo)
-        time.sleep(2)
-
-        # Clica no resultado que corresponde exatamente ao nome do grupo
+        # Aguarda a busca filtrar e clica no grupo de título EXATO. A lista
+        # re-renderiza de forma assíncrona, então entre localizar e clicar o
+        # elemento pode ficar "stale", "não interativo" (ainda animando) ou ter o
+        # clique interceptado. Tratamos toda essa família de estados transitórios
+        # com algumas tentativas + folga curta, em vez de um sleep fixo. O
+        # wait_curto já espera o resultado aparecer; o retry absorve o re-render.
         log.info("Aguardando resultado da pesquisa...")
-        resultado = wait_curto.until(
-            EC.element_to_be_clickable(
-                (By.XPATH, f'//span[@title="{grupo}"]')
+        for tentativa in range(1, 4):
+            try:
+                resultado = wait_curto.until(
+                    EC.element_to_be_clickable((By.XPATH, f'//span[@title="{grupo}"]'))
+                )
+                resultado.click()
+                break
+            except (StaleElementReferenceException,
+                    ElementNotInteractableException,
+                    ElementClickInterceptedException) as e:
+                log.debug(
+                    f"Resultado da busca em estado transitório "
+                    f"({type(e).__name__}, tentativa {tentativa}/3) — aguardando e repetindo."
+                )
+                time.sleep(0.5)
+        else:
+            raise Exception(
+                f"Não foi possível clicar no grupo '{grupo}': resultado instável após 3 tentativas."
             )
-        )
-        resultado.click()
         log.info(f"Grupo '{grupo}' selecionado.")
+        crono.marco("buscar + selecionar grupo")
         time.sleep(1)
 
-        # Tenta encontrar a caixa de mensagem com múltiplos XPaths
-        xpaths_mensagem = [
-            '//div[@contenteditable="true"][@data-tab="10"]',
-            '//div[@role="textbox"][@data-tab="10"]',
-            '//div[@data-lexical-editor="true"][@data-tab="10"]',
-            '//div[@contenteditable="true"][contains(@aria-label,"ensagem")]',
-        ]
-        caixa_msg = None
-        for i, xpath in enumerate(xpaths_mensagem):
-            try:
-                log.info(f"[{i+1}/{len(xpaths_mensagem)}] Buscando caixa de mensagem: {xpath}")
-                caixa_msg = WebDriverWait(driver, 15 if i == 0 else 3).until(
-                    EC.element_to_be_clickable((By.XPATH, xpath))
+        # ── Etapa 1: mensagem de texto principal (pulável em retry) ──────────
+        if "texto" in etapas_feitas:
+            log.info("Etapa 'texto' já enviada nesta edição — pulando.")
+        else:
+            # Tenta encontrar a caixa de mensagem com múltiplos XPaths
+            xpaths_mensagem = [
+                '//div[@contenteditable="true"][@data-tab="10"]',
+                '//div[@role="textbox"][@data-tab="10"]',
+                '//div[@data-lexical-editor="true"][@data-tab="10"]',
+                '//div[@contenteditable="true"][contains(@aria-label,"ensagem")]',
+            ]
+            caixa_msg = None
+            for i, xpath in enumerate(xpaths_mensagem):
+                try:
+                    log.info(f"[{i+1}/{len(xpaths_mensagem)}] Buscando caixa de mensagem: {xpath}")
+                    caixa_msg = WebDriverWait(driver, 15 if i == 0 else 3).until(
+                        EC.element_to_be_clickable((By.XPATH, xpath))
+                    )
+                    log.info("Caixa de mensagem encontrada.")
+                    break
+                except Exception:
+                    log.warning(f"XPath não encontrou elemento: {xpath}")
+
+            if caixa_msg is None:
+                raise Exception(
+                    "Nenhum XPath funcionou para a caixa de mensagem. "
+                    "O WhatsApp Web pode ter atualizado sua interface."
                 )
-                log.info("Caixa de mensagem encontrada.")
-                break
-            except Exception:
-                log.warning(f"XPath não encontrou elemento: {xpath}")
 
-        if caixa_msg is None:
-            raise Exception(
-                "Nenhum XPath funcionou para a caixa de mensagem. "
-                "O WhatsApp Web pode ter atualizado sua interface."
-            )
+            # Cola a mensagem via clipboard (evita erro de emoji no send_keys)
+            # O WhatsApp Web preserva as quebras de linha ao colar texto
+            _colar_no_elemento(driver, caixa_msg, mensagem)
+            time.sleep(0.5)
+            caixa_msg.send_keys(Keys.ENTER)
+            log.info("Mensagem de texto enviada com sucesso!")
+            # Folga curta: o ENTER envia e limpa o composer na hora; o passo
+            # seguinte (anexo/fofoca) já tem WebDriverWait próprio para a prontidão.
+            time.sleep(0.5)
+            marcar_etapa_enviada(id_edicao, "texto")
 
-        # Cola a mensagem via clipboard (evita erro de emoji no send_keys)
-        # O WhatsApp Web preserva as quebras de linha ao colar texto
-        _colar_no_elemento(driver, caixa_msg, mensagem)
-        time.sleep(0.5)
-        caixa_msg.send_keys(Keys.ENTER)
-        log.info("Mensagem de texto enviada com sucesso!")
-        time.sleep(2)
+        crono.marco("etapa texto")
 
-        # Envia todos os PDFs de uma vez (uma única operação de anexo)
-        if caminhos_pdf:
+        # ── Etapa 2: PDFs, de uma vez (pulável em retry) ─────────────────────
+        if caminhos_pdf and "pdfs" not in etapas_feitas:
             _enviar_arquivos_no_grupo(driver, caminhos_pdf)
             time.sleep(2)
+            marcar_etapa_enviada(id_edicao, "pdfs")
+        elif caminhos_pdf:
+            log.info("Etapa 'pdfs' já enviada nesta edição — pulando.")
 
-        # Envia mensagem de fofoca após todos os PDFs (mesma sessão Chrome)
-        if mensagem_apos_pdf:
+        crono.marco("etapa pdfs")
+
+        # ── Etapa 3: mensagem de fofoca após os PDFs (pulável em retry) ──────
+        if mensagem_apos_pdf and "fofoca" in etapas_feitas:
+            log.info("Etapa 'fofoca' já enviada nesta edição — pulando.")
+        elif mensagem_apos_pdf:
             log.info("Enviando mensagem pós-PDF (Fofoca da Secretaria)...")
             xpaths_msg_pos = [
                 '//div[@contenteditable="true"][@data-tab="10"]',
@@ -673,13 +827,20 @@ def enviar_whatsapp(
                 caixa_pos.send_keys(Keys.ENTER)
                 log.info("Mensagem pós-PDF enviada com sucesso!")
                 time.sleep(2)
+                marcar_etapa_enviada(id_edicao, "fofoca")
             else:
                 log.warning("Caixa de mensagem não encontrada para envio pós-PDF.")
 
+        # Confirma que tudo saiu antes de fechar o Chrome (o finally faz quit()).
+        _aguardar_envio_concluido(driver)
+        crono.marco("etapa fofoca + confirmação (fim)")
         return True
 
     except Exception as e:
-        log.error(f"Erro ao enviar mensagem no WhatsApp: {e}")
+        # exc_info=True registra o traceback completo: sem ele, causas radicalmente
+        # diferentes (Chrome não inicia, UI mudou, bug de código) viram a mesma
+        # linha genérica, tornando o diagnóstico de falhas agendadas quase impossível.
+        log.error(f"Erro ao enviar mensagem no WhatsApp: {e}", exc_info=True)
         return False
 
     finally:

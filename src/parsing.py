@@ -131,8 +131,12 @@ def _extrair_dados_fofoca(paragrafo: str, secretaria: str) -> dict | None:
     )
     cargo = m_cargo.group(1).strip().rstrip(",").strip() if m_cargo else "cargo não identificado"
 
-    # Símbolo CC
-    m_cc = re.search(r'\bCC\s*(\d+)\b', paragrafo)
+    # Símbolo CC — ancorado ao trecho logo APÓS o cargo, para não capturar um CC
+    # citado antes no parágrafo (vaga do antecessor, atos concatenados, etc.).
+    # Se o cargo não foi identificado, ou nada for achado após ele, recai na busca
+    # no parágrafo inteiro (comportamento anterior) para não perder o símbolo.
+    trecho_cc = paragrafo[m_cargo.end():] if m_cargo else paragrafo
+    m_cc = re.search(r'\bCC\s*(\d+)\b', trecho_cc) or re.search(r'\bCC\s*(\d+)\b', paragrafo)
     simbolo_cc = f"CC{m_cc.group(1)}" if m_cc else None
 
     # Converte secretaria de volta para Title Case legível
@@ -311,6 +315,15 @@ def formatar_ponto_facultativo(pontos: list[dict]) -> list[str]:
     return linhas
 
 
+def _chave_pessoa(nome: str) -> str:
+    """Chave normalizada para parear exoneração↔nomeação da mesma pessoa.
+
+    Colapsa espaços repetidos e remove espaços nas pontas, tolerando pequenas
+    diferenças de captura de nome entre os dois atos. Não altera o nome exibido.
+    """
+    return re.sub(r"\s+", " ", nome or "").strip()
+
+
 def promovido_remanejado(fofocas: list[dict]) -> list[dict]:
     """
     Consolida pares exoneração + nomeação da mesma pessoa em um único evento.
@@ -327,18 +340,33 @@ def promovido_remanejado(fofocas: list[dict]) -> list[dict]:
       CC11 → CC11 : n_novo (11) = n_antigo (11) → REMANEJADO(A)
       CC11 → CC15 : n_novo (15) > n_antigo (11) → REMANEJADO(A)
     """
-    exoneracoes = {f["pessoa"]: f for f in fofocas if "EXONERADO" in f.get("acao", "")}
-    nomeacoes   = {f["pessoa"]: f for f in fofocas if "NOMEADO"   in f.get("acao", "")}
+    # Indexa por chave normalizada (espaços colapsados) para tolerar diferenças
+    # de captura entre os dois atos. Em colisão (a mesma pessoa com dois atos do
+    # mesmo tipo na edição) avisa e mantém o último — sem essa detecção, uma das
+    # movimentações sumiria em silêncio.
+    exoneracoes: dict[str, dict] = {}
+    nomeacoes: dict[str, dict] = {}
+    for f in fofocas:
+        acao_f = f.get("acao", "")
+        chave = _chave_pessoa(f["pessoa"])
+        if "EXONERADO" in acao_f:
+            if chave in exoneracoes:
+                log.warning(f"Múltiplas exonerações para '{f['pessoa']}' na mesma edição — mantendo a última.")
+            exoneracoes[chave] = f
+        elif "NOMEADO" in acao_f:
+            if chave in nomeacoes:
+                log.warning(f"Múltiplas nomeações para '{f['pessoa']}' na mesma edição — mantendo a última.")
+            nomeacoes[chave] = f
 
     pessoas_consolidadas: set[str] = set()
     consolidados: list[dict] = []
 
-    for pessoa, exon in exoneracoes.items():
-        if pessoa not in nomeacoes:
+    for chave, exon in exoneracoes.items():
+        if chave not in nomeacoes:
             continue
 
-        nom = nomeacoes[pessoa]
-        pessoas_consolidadas.add(pessoa)
+        nom = nomeacoes[chave]
+        pessoas_consolidadas.add(chave)
 
         cc_ant_str = exon.get("simbolo_cc") or ""
         cc_nov_str = nom.get("simbolo_cc")  or ""
@@ -354,7 +382,7 @@ def promovido_remanejado(fofocas: list[dict]) -> list[dict]:
 
         consolidados.append({
             "acao":               acao,
-            "pessoa":             pessoa,
+            "pessoa":             exon["pessoa"],
             "cargo_anterior":     exon.get("cargo", "cargo não identificado"),
             "secretaria_anterior":exon.get("secretaria", "secretaria não identificada"),
             "cc_anterior":        exon.get("simbolo_cc"),
@@ -366,12 +394,13 @@ def promovido_remanejado(fofocas: list[dict]) -> list[dict]:
         })
         # debug (não info) para não expor pessoa (PII) no console
         log.debug(
-            f"{acao}: {pessoa} | "
+            f"{acao}: {exon['pessoa']} | "
             f"{exon.get('secretaria')} → {nom.get('secretaria')}"
         )
 
-    # Mantém registros sem par (exoneração ou nomeação sem correspondente)
-    restantes = [f for f in fofocas if f["pessoa"] not in pessoas_consolidadas]
+    # Mantém registros sem par (exoneração ou nomeação sem correspondente).
+    # Compara pela MESMA chave normalizada usada na consolidação.
+    restantes = [f for f in fofocas if _chave_pessoa(f["pessoa"]) not in pessoas_consolidadas]
 
     return consolidados + restantes
 
@@ -633,7 +662,7 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str, numero: int | None
             portaria_nomes[titulo].append(oc["nome"])
 
     linhas = [
-        f"📢 *MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ*\n",
+        "📢 *MONITORAMENTO — DIÁRIO OFICIAL DE MOSSORÓ*\n",
         f"👥 *{NOME_SALA}*\n",
         edicao_str,
         f"🔍 {len(portaria_nomes)} ocorrência(s) encontrada(s)\n",
@@ -649,11 +678,11 @@ def formatar_mensagem(ocorrencias: list[dict], data_str: str, numero: int | None
         corpo = "\n".join(linhas_conteudo[1:]).strip()
 
         linhas += [
-            f"━━━━━━━━━━━━━━━━━━",
+            "━━━━━━━━━━━━━━━━━━",
             f"*{i}. Nome:* {nomes_str}",
             f"*Ato:* {titulo}",
             f"\n{corpo}",
             "",
         ]
 
-    return "\n".join(l for l in linhas if l is not None)
+    return "\n".join(linha for linha in linhas if linha is not None)

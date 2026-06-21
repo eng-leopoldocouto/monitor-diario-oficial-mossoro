@@ -76,7 +76,13 @@ def buscar_publicacao_por_data(data_str: str) -> dict | None:
             if not date_match:
                 continue
 
-            data_card = datetime.strptime(date_match.group(1), "%d/%m/%Y").date()
+            # O regex casa datas sintaticamente válidas mas impossíveis
+            # (ex: 32/13/2026); strptime lança ValueError — pula o card.
+            try:
+                data_card = datetime.strptime(date_match.group(1), "%d/%m/%Y").date()
+            except ValueError:
+                log.debug(f"Data inválida ignorada no card: {date_match.group(1)}")
+                continue
 
             if data_card == data_alvo:
                 # Monta URL do PDF (padrão observado no site)

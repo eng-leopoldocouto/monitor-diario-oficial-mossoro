@@ -3,6 +3,8 @@
 Centraliza a leitura do .env, as constantes da aplicação e o logger
 compartilhado (`log`), importado pelos demais módulos.
 """
+import contextlib
+import json
 import os
 import re
 import sys
@@ -60,6 +62,27 @@ def _ler_env_obrigatorio(chave: str) -> str:
     return valor
 
 
+def _ler_int_env(chave: str, padrao: int) -> int:
+    """Lê variável de ambiente inteira; usa o padrão se ausente ou inválida.
+
+    Avisa (stderr) em vez de propagar ValueError, pois um valor mal digitado
+    no .env (vazio, com espaços ou não numérico) não deve travar o import do
+    módulo — e o logger ainda não existe neste ponto da inicialização.
+    """
+    valor = os.environ.get(chave, "").strip()
+    if not valor:
+        return padrao
+    try:
+        return int(valor)
+    except ValueError:
+        print(
+            f"\n[AVISO] Variável de ambiente {chave}='{valor}' não é um inteiro "
+            f"válido — usando o padrão {padrao}.\n",
+            file=sys.stderr,
+        )
+        return padrao
+
+
 # ── Nomes monitorados ────────────────────────────────────────────────────────
 # Obrigatório via .env. Nenhum nome real fica hardcoded no código.
 NOMES_MONITORADOS: list[str] = _ler_lista_env("NOMES_MONITORADOS", [])
@@ -106,7 +129,7 @@ NOME_SALA: str       = _ler_env_obrigatorio("NOME_SALA")
 WHATSAPP_GRUPO_TESTE: str = os.environ.get("WHATSAPP_GRUPO_TESTE", "TESTES SCRIPTs").strip()
 
 # ── Parâmetros operacionais ──────────────────────────────────────────────────
-TIMEOUT_QR_CODE: int = int(os.environ.get("TIMEOUT_QR_CODE", "120"))
+TIMEOUT_QR_CODE: int = _ler_int_env("TIMEOUT_QR_CODE", 120)
 
 # URL base do Diário Oficial de Mossoró (pública — não é dado sensível)
 BASE_URL = "https://dom.mossoro.rn.gov.br"
@@ -214,8 +237,12 @@ def _atualizar_env(chave: str, valor: str) -> None:
         log.warning(f"Arquivo .env não encontrado em: {env_path} — valor não salvo.")
         return
 
-    with open(env_path, "r", encoding="utf-8") as f:
-        linhas = f.readlines()
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            linhas = f.readlines()
+    except OSError as e:
+        log.error(f"Falha ao ler {env_path}: {e} — valor não salvo.")
+        return
 
     padrao = re.compile(rf"^{re.escape(chave)}\s*=")
     nova_linha = f"{chave}={valor}\n"
@@ -232,7 +259,95 @@ def _atualizar_env(chave: str, valor: str) -> None:
             linhas.append("\n")
         linhas.append(nova_linha)
 
-    with open(env_path, "w", encoding="utf-8") as f:
-        f.writelines(linhas)
+    # Escrita atômica: grava num temporário no MESMO diretório e troca via
+    # os.replace (rename atômico no mesmo filesystem). Evita corromper/truncar
+    # o .env se o processo morrer no meio da escrita — o arquivo é o dado de
+    # configuração do usuário, não versionado.
+    tmp_path = env_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.writelines(linhas)
+        os.replace(tmp_path, env_path)
+    except OSError as e:
+        log.error(f"Falha ao gravar {env_path}: {e} — valor não salvo.")
+        if os.path.isfile(tmp_path):
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
+        return
 
     log.info(f".env atualizado: {chave}={valor}")
+
+
+# ─────────────────────────────────────────────
+# ESTADO DE ENVIO — idempotência por etapa
+# ─────────────────────────────────────────────
+# Registra, por número de edição, quais etapas de envio (texto/pdfs/fofoca) já
+# foram confirmadas. Permite que um retry da MESMA edição pule o que já foi
+# enviado — em vez de reenviar o texto quando, p.ex., só o anexo PDF falhou.
+# É um arquivo de estado descartável (regenerável); não é a config do usuário.
+
+_ESTADO_ENVIO_PATH = os.path.join(_BASE_DIR, ".envio_estado.json")
+_MAX_EDICOES_ESTADO = 20  # mantém só as N edições mais recentes (cap de tamanho)
+
+
+def _ler_estado_envio() -> dict:
+    """Lê o estado de envio do disco; trata ausência/corrupção como vazio."""
+    try:
+        with open(_ESTADO_ENVIO_PATH, encoding="utf-8") as f:
+            dados = json.load(f)
+        return dados if isinstance(dados, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _gravar_estado_envio(estado: dict) -> None:
+    """Grava o estado de envio de forma atômica (temporário + os.replace)."""
+    tmp_path = _ESTADO_ENVIO_PATH + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(estado, f, ensure_ascii=False)
+        os.replace(tmp_path, _ESTADO_ENVIO_PATH)
+    except OSError as e:
+        log.warning(f"Falha ao gravar estado de envio: {e}")
+        if os.path.isfile(tmp_path):
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
+
+
+def _prune_estado(estado: dict) -> None:
+    """Mantém só as _MAX_EDICOES_ESTADO edições de maior número (mais recentes)."""
+    if len(estado) <= _MAX_EDICOES_ESTADO:
+        return
+
+    def _num(chave: str) -> int:
+        try:
+            return int(chave)
+        except ValueError:
+            return -1
+
+    for chave in sorted(estado, key=_num)[:-_MAX_EDICOES_ESTADO]:
+        estado.pop(chave, None)
+
+
+def etapas_enviadas(id_edicao) -> set[str]:
+    """Conjunto de etapas já confirmadas para a edição (vazio se nenhuma/sem id)."""
+    if id_edicao is None:
+        return set()
+    return set(_ler_estado_envio().get(str(id_edicao), []))
+
+
+def marcar_etapa_enviada(id_edicao, etapa: str) -> None:
+    """Persiste em disco que uma etapa de envio foi concluída para a edição.
+
+    No-op quando id_edicao é None (modo teste ou edição sem número), preservando
+    o comportamento de sempre reenviar nesses casos.
+    """
+    if id_edicao is None:
+        return
+    estado = _ler_estado_envio()
+    chave = str(id_edicao)
+    etapas = set(estado.get(chave, []))
+    etapas.add(etapa)
+    estado[chave] = sorted(etapas)
+    _prune_estado(estado)
+    _gravar_estado_envio(estado)

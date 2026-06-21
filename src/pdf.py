@@ -1,4 +1,5 @@
 """Extração e fatiamento de PDFs do Diário Oficial por ocorrência."""
+import contextlib
 import io
 import os
 import re
@@ -156,7 +157,14 @@ def extrair_pdfs_por_ocorrencia(
         log.error(f"Erro ao baixar PDF: {e}")
         return []
 
-    reader = PdfReader(io.BytesIO(resp.content))
+    # O servidor pode devolver HTML de erro (status 200), PDF truncado ou vazio.
+    # pypdf lança PdfReadError/EmptyFileError nesses casos — trata e desiste sem
+    # derrubar a execução agendada.
+    try:
+        reader = PdfReader(io.BytesIO(resp.content))
+    except Exception as e:
+        log.error(f"Falha ao abrir o PDF baixado (conteúdo inválido ou corrompido): {e}")
+        return []
     pasta = PDF_TEMP_DIR  # PDFs temporários salvos em subpasta dedicada
     os.makedirs(pasta, exist_ok=True)
     caminhos_gerados = []
@@ -164,8 +172,17 @@ def extrair_pdfs_por_ocorrencia(
     # Monta texto combinado de todas as páginas para localizar spans de portarias.
     # Cada página ocupa o intervalo [page_offsets[i], page_offsets[i+1]) na string.
     # Assim podemos mapear qualquer posição de caractere → número da página.
+    def _texto_pagina(pagina) -> str:
+        # extract_text() pode lançar em páginas malformadas (fontes corrompidas);
+        # uma página ruim não deve abortar a extração de toda a edição.
+        try:
+            return pagina.extract_text() or ""
+        except Exception as e:
+            log.warning(f"Falha ao extrair texto de uma página do PDF: {e}")
+            return ""
+
     page_texts_norm: list[str] = [
-        _normalizar(p.extract_text() or "") for p in reader.pages
+        _normalizar(_texto_pagina(p)) for p in reader.pages
     ]
     page_offsets: list[int] = []
     _pos = 0
@@ -247,8 +264,17 @@ def extrair_pdfs_por_ocorrencia(
         nome_arquivo = _sanitizar_nome_arquivo(f"{titulo_arquivo} - {nomes_arquivo}") + ".pdf"
         # basename garante que o arquivo nunca escape da pasta de destino
         caminho_saida = os.path.join(pasta, os.path.basename(nome_arquivo))
-        with open(caminho_saida, "wb") as f:
-            writer.write(f)
+        try:
+            with open(caminho_saida, "wb") as f:
+                writer.write(f)
+        except OSError as e:
+            # Disco cheio / permissão / arquivo travado: remove o parcial e segue
+            # para a próxima portaria em vez de abortar a edição inteira.
+            log.error(f"Falha ao gravar PDF '{caminho_saida}': {e} — ocorrência pulada.")
+            if os.path.isfile(caminho_saida):
+                with contextlib.suppress(OSError):
+                    os.remove(caminho_saida)
+            continue
 
         log.info(f"PDF gerado: {caminho_saida}")
         caminhos_gerados.append(caminho_saida)

@@ -425,7 +425,6 @@ class TestExtrairPdfsPorOcorrencia:
 
     def test_retorna_lista_vazia_sem_pypdf(self):
         """Se pypdf não estiver instalado, retorna lista vazia sem travar."""
-        import sys
         import builtins
         original_import = builtins.__import__
 
@@ -447,7 +446,7 @@ class TestExtrairPdfsPorOcorrencia:
 
         # Cria um PDF mínimo com texto da portaria
         writer = PdfWriter()
-        page = writer.add_blank_page(width=200, height=200)
+        writer.add_blank_page(width=200, height=200)
         buf = _io.BytesIO()
         writer.write(buf)
         pdf_bytes = buf.getvalue()
@@ -460,7 +459,7 @@ class TestExtrairPdfsPorOcorrencia:
 
         with patch("monitor_diario_oficial.requests.get", return_value=mock_resp):
             with patch("monitor_diario_oficial.os.path.dirname", return_value=str(tmp_path)):
-                resultado = monitor.extrair_pdfs_por_ocorrencia("http://pdf.url", [oc])
+                monitor.extrair_pdfs_por_ocorrencia("http://pdf.url", [oc])
 
         # Mesmo sem páginas encontradas (PDF em branco), a lista pode ser vazia.
         # O que testamos é que não lançou exceção e o formato do nome está correto
@@ -497,7 +496,6 @@ class TestExtrairPdfsPorOcorrencia:
 
     def test_nome_arquivo_sem_data_quando_ementa_nao_e_data(self):
         """Quando a ementa não começa com 'DE <número>', não deve ser concatenada."""
-        titulo = "PORTARIA Nº 001,"
         ementa = "Dispõe sobre nomeação."
 
         # Não deve concatenar — ementa não é continuação de data
@@ -1300,16 +1298,21 @@ class TestEnviarWhatsapp:
         mock_wait.return_value = mock_wait_inst
 
         mock_popup_btn = MagicMock()
+        mock_popup_btn.is_displayed.return_value = True
+        mock_popup_btn.is_enabled.return_value = True
         mock_caixa_pesquisa = MagicMock()
         mock_resultado_grupo = MagicMock()
         mock_caixa_msg = MagicMock()
+
+        # O fechamento do pop-up usa find_elements (instantâneo), não WebDriverWait;
+        # sem PDFs, find_elements só é chamado nesse fechamento.
+        mock_driver.find_elements.return_value = [mock_popup_btn]
 
         mock_wait_inst.until.side_effect = [
             SeleniumTimeoutException(),  # QR ausente
             MagicMock(),                 # portão de login → logado
             SeleniumTimeoutException(),  # sem diálogo "usar nesta janela"
             MagicMock(),                 # presence_of //div[@role="dialog"] → pop-up presente
-            mock_popup_btn,              # 1º botão de fechar conhecido é clicável
             mock_caixa_pesquisa,         # caixa de pesquisa
             mock_resultado_grupo,        # grupo encontrado
             mock_caixa_msg,              # caixa de mensagem
@@ -1329,7 +1332,7 @@ class TestEnviarWhatsapp:
         with patch(
             "monitor_diario_oficial.whatsapp.tempfile.mkdtemp",
             return_value="/tmp/wa_qr_fake",
-        ), patch("monitor_diario_oficial.whatsapp.shutil.rmtree") as mock_rmtree:
+        ), patch("monitor_diario_oficial.whatsapp.shutil.rmtree"):
             monitor.enviar_whatsapp("Msg", "Grupo", sessao_descartavel=True)
 
         args = mock_chrome.call_args.kwargs["options"].arguments
@@ -1490,9 +1493,13 @@ class TestFecharDialogosSobrepostos:
         """Com diálogo presente, clica no 1º botão de fechar conhecido e retorna True."""
         mock_driver = MagicMock()
         mock_botao = MagicMock()
+        mock_botao.is_displayed.return_value = True
+        mock_botao.is_enabled.return_value = True
+        # O fechamento usa find_elements (instantâneo); o 1º xpath retorna o botão.
+        mock_driver.find_elements.return_value = [mock_botao]
         with patch("monitor_diario_oficial.whatsapp.WebDriverWait") as mock_wait:
-            # 1ª until: presença do diálogo → presente; 2ª: botão de fechar clicável.
-            mock_wait.return_value.until.side_effect = [MagicMock(), mock_botao]
+            # until é usado só na detecção de presença do diálogo (presente).
+            mock_wait.return_value.until.return_value = MagicMock()
             resultado = monitor.whatsapp._fechar_dialogos_sobrepostos(mock_driver)
         assert resultado is True
         mock_botao.click.assert_called_once()
@@ -1730,6 +1737,22 @@ class TestExtrairDadosFofoca:
 
     def test_ex1_cc_nomear(self):
         r = monitor._extrair_dados_fofoca(self.PARA1, self.SEC1)
+        assert r["simbolo_cc"] == "CC11"
+
+    def test_cc_ancorado_ao_cargo_ignora_cc_anterior(self):
+        """O símbolo CC deve ser o do CARGO, não um CC citado antes no parágrafo.
+
+        Regressão: a busca pegava o PRIMEIRO 'CC' do parágrafo inteiro. Aqui há
+        um 'CC5' no qualificador (vaga do antecessor) antes do 'CC11' do cargo.
+        """
+        paragrafo = (
+            "ART. 1 NOMEAR, EM VAGA DO SÍMBOLO CC5, FULANO DE TAL PARA EXERCER "
+            "O CARGO EM COMISSÃO DE ASSESSOR, SÍMBOLO CC11, NA FUNÇÃO DE ASSESSOR, "
+            "COM LOTAÇÃO NA SECRETARIA MUNICIPAL DE SAÚDE DA PREFEITURA MUNICIPAL DE MOSSORÓ."
+        )
+        r = monitor._extrair_dados_fofoca(paragrafo, "SECRETARIA MUNICIPAL DE SAÚDE")
+        assert r is not None
+        assert r["pessoa"] == "FULANO DE TAL"
         assert r["simbolo_cc"] == "CC11"
 
     # ── Exemplo 2: NOMEAR mulher ─────────────────────────────────────────────
@@ -2046,6 +2069,35 @@ class TestPromovidoRemanejado:
         assert "NOMEADO" not in resultado
         assert "EXONERADO" not in resultado
 
+    # ── Robustez do pareamento por nome (espaços / colisão) ───────────────────
+
+    def test_parea_mesmo_nome_com_espacos_diferentes(self):
+        """Espaçamento diferente entre exoneração e nomeação ainda deve parear.
+
+        Sem normalização, 'JOAO  SILVA' != 'JOAO SILVA' → não pareava e os dois
+        atos apareciam soltos em vez de um único PROMOVIDO/REMANEJADO.
+        """
+        fofocas = [
+            self._exon("JOAO  SILVA", cc="CC15"),   # dois espaços
+            self._nom("JOAO SILVA",   cc="CC11"),   # um espaço
+        ]
+        resultado = monitor.promovido_remanejado(fofocas)
+        assert len(resultado) == 1
+        assert resultado[0]["acao"] == "PROMOVIDO(A)"
+
+    def test_multiplas_exoneracoes_mesma_pessoa_logam_aviso(self):
+        """Duas exonerações da mesma pessoa: consolida sem quebrar e avisa no log."""
+        fofocas = [
+            self._exon("MARIA LIMA", cc="CC10"),
+            self._exon("MARIA LIMA", cc="CC12"),
+            self._nom("MARIA LIMA",  cc="CC7"),
+        ]
+        with patch.object(monitor.parsing, "log") as mock_log:
+            resultado = monitor.promovido_remanejado(fofocas)
+        assert len(resultado) == 1
+        assert resultado[0]["pessoa"] == "MARIA LIMA"
+        assert mock_log.warning.called
+
 
 # ══════════════════════════════════════════════════════════════
 # 10. detectar_ponto_facultativo / formatar_ponto_facultativo
@@ -2125,8 +2177,8 @@ class TestPontoFacultativo:
         outro = monitor.formatar_ponto_facultativo(
             [{"data_br": "24/12/2025", "dia_semana": "quarta", "weekday": 2}]
         )
-        assert any("SEXTOU OFICIAL" in l for l in sexta)
-        assert any("FOLGA À VISTA" in l for l in outro)
+        assert any("SEXTOU OFICIAL" in linha for linha in sexta)
+        assert any("FOLGA À VISTA" in linha for linha in outro)
 
     def test_fofoca_anexa_ponto_facultativo_ao_final_sem_movimentacoes(self):
         pf = [{"data_br": "21/11/2025", "dia_semana": "sexta", "weekday": 4}]
@@ -2410,3 +2462,159 @@ class TestAtualizarEnv:
             monitor.config._atualizar_env("ULTIMO_DOM_NUMERO", "815")
 
         assert env_file.read_text(encoding="utf-8") == "OUTRA=1\nULTIMO_DOM_NUMERO=815\n"
+
+
+# ══════════════════════════════════════════════════════════════
+# 14. _ler_int_env — leitura tolerante de variáveis inteiras do .env
+# ══════════════════════════════════════════════════════════════
+
+class TestLerIntEnv:
+    """Um valor inválido no .env não pode levantar ValueError: isso travaria
+    o import de config.py (e, portanto, toda a aplicação) na inicialização."""
+
+    CHAVE = "_TESTE_INT_ENV_TMP"
+
+    def test_valor_valido(self, monkeypatch):
+        monkeypatch.setenv(self.CHAVE, "815")
+        assert monitor.config._ler_int_env(self.CHAVE, 0) == 815
+
+    def test_valor_com_espacos_e_normalizado(self, monkeypatch):
+        monkeypatch.setenv(self.CHAVE, "  42  ")
+        assert monitor.config._ler_int_env(self.CHAVE, 0) == 42
+
+    def test_ausente_usa_padrao(self, monkeypatch):
+        monkeypatch.delenv(self.CHAVE, raising=False)
+        assert monitor.config._ler_int_env(self.CHAVE, 7) == 7
+
+    def test_vazio_usa_padrao(self, monkeypatch):
+        monkeypatch.setenv(self.CHAVE, "")
+        assert monitor.config._ler_int_env(self.CHAVE, 7) == 7
+
+    def test_invalido_usa_padrao_sem_levantar(self, monkeypatch):
+        monkeypatch.setenv(self.CHAVE, "120s")
+        assert monitor.config._ler_int_env(self.CHAVE, 120) == 120
+
+
+# ══════════════════════════════════════════════════════════════
+# 15. _atualizar_env — escrita atômica (não deixa .tmp nem corrompe)
+# ══════════════════════════════════════════════════════════════
+
+class TestAtualizarEnvAtomico:
+
+    def test_nao_deixa_arquivo_temporario_apos_sucesso(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("ULTIMO_DOM_NUMERO=800\n", encoding="utf-8")
+
+        with patch.object(monitor.config, "_BASE_DIR", str(tmp_path)):
+            monitor.config._atualizar_env("ULTIMO_DOM_NUMERO", "815")
+
+        assert env_file.read_text(encoding="utf-8") == "ULTIMO_DOM_NUMERO=815\n"
+        assert not (tmp_path / ".env.tmp").exists()
+
+
+# ══════════════════════════════════════════════════════════════
+# 16. _executar_protegido — uma exceção não pode matar o loop agendado
+# ══════════════════════════════════════════════════════════════
+
+class TestExecutarProtegido:
+
+    def test_excecao_em_main_e_capturada_e_logada(self):
+        """Exceção não tratada em main() é logada, não propagada — o agendamento sobrevive."""
+        with patch.object(monitor, "main", side_effect=RuntimeError("boom")), \
+             patch.object(monitor, "log") as mock_log:
+            monitor._executar_protegido()  # não deve levantar
+        assert mock_log.error.called
+
+    def test_sucesso_chama_main_uma_vez(self):
+        with patch.object(monitor, "main") as mock_main:
+            monitor._executar_protegido()
+        mock_main.assert_called_once_with()
+
+    def test_keyboard_interrupt_propaga(self):
+        """KeyboardInterrupt (BaseException) deve continuar encerrando o processo."""
+        with patch.object(monitor, "main", side_effect=KeyboardInterrupt), \
+             pytest.raises(KeyboardInterrupt):
+            monitor._executar_protegido()
+
+
+# ══════════════════════════════════════════════════════════════
+# 17. extrair_pdfs_por_ocorrencia — PDF inválido/corrompido não derruba o job
+# ══════════════════════════════════════════════════════════════
+
+class TestExtrairPdfsConteudoInvalido:
+
+    def test_conteudo_nao_pdf_retorna_lista_vazia(self):
+        """Servidor devolve HTML/lixo (status 200) em vez de PDF: não lança, retorna []."""
+        mock_resp = MagicMock()
+        mock_resp.content = b"<html><body>erro 500</body></html>"
+        mock_resp.raise_for_status = MagicMock()
+
+        oc = {
+            "nome": "FULANO DE TAL",
+            "portaria": {"titulo": "PORTARIA Nº 001/2026", "ementa": "", "conteudo": "x"},
+        }
+        with patch("monitor_diario_oficial.requests.get", return_value=mock_resp):
+            resultado = monitor.extrair_pdfs_por_ocorrencia("http://pdf.url", [oc])
+
+        assert resultado == []
+
+
+# ══════════════════════════════════════════════════════════════
+# 18. Estado de envio — idempotência por etapa (texto/pdfs/fofoca)
+# ══════════════════════════════════════════════════════════════
+
+class TestEstadoEnvio:
+    """Persistência de progresso de envio por edição, para que um retry pule as
+    etapas já concluídas (evita reenviar o texto quando só o PDF falhou)."""
+
+    def test_etapas_vazias_sem_arquivo(self, tmp_path):
+        path = str(tmp_path / ".envio_estado.json")
+        with patch.object(monitor.config, "_ESTADO_ENVIO_PATH", path):
+            assert monitor.config.etapas_enviadas(815) == set()
+
+    def test_marca_e_le_etapas_por_edicao(self, tmp_path):
+        path = str(tmp_path / ".envio_estado.json")
+        with patch.object(monitor.config, "_ESTADO_ENVIO_PATH", path):
+            monitor.config.marcar_etapa_enviada(815, "texto")
+            monitor.config.marcar_etapa_enviada(815, "pdfs")
+            assert monitor.config.etapas_enviadas(815) == {"texto", "pdfs"}
+            # outra edição não é afetada
+            assert monitor.config.etapas_enviadas(816) == set()
+
+    def test_id_none_desativa_e_nao_cria_arquivo(self, tmp_path):
+        path = str(tmp_path / ".envio_estado.json")
+        with patch.object(monitor.config, "_ESTADO_ENVIO_PATH", path):
+            monitor.config.marcar_etapa_enviada(None, "texto")  # no-op
+            assert monitor.config.etapas_enviadas(None) == set()
+            assert not os.path.isfile(path)
+
+    def test_prune_mantem_apenas_edicoes_mais_recentes(self, tmp_path):
+        path = str(tmp_path / ".envio_estado.json")
+        with patch.object(monitor.config, "_ESTADO_ENVIO_PATH", path), \
+             patch.object(monitor.config, "_MAX_EDICOES_ESTADO", 3):
+            for n in [810, 811, 812, 813, 814]:
+                monitor.config.marcar_etapa_enviada(n, "texto")
+            assert monitor.config.etapas_enviadas(810) == set()
+            assert monitor.config.etapas_enviadas(811) == set()
+            assert monitor.config.etapas_enviadas(812) == {"texto"}
+            assert monitor.config.etapas_enviadas(814) == {"texto"}
+
+    def test_arquivo_corrompido_tratado_como_vazio(self, tmp_path):
+        path = tmp_path / ".envio_estado.json"
+        path.write_text("{ não é json válido", encoding="utf-8")
+        with patch.object(monitor.config, "_ESTADO_ENVIO_PATH", str(path)):
+            assert monitor.config.etapas_enviadas(815) == set()
+
+
+class TestEnviarWhatsappIdempotente:
+
+    def test_pula_envio_quando_todas_etapas_ja_feitas(self):
+        """Todas as etapas requeridas já enviadas → retorna True sem abrir o Chrome."""
+        with patch("monitor_diario_oficial.whatsapp.etapas_enviadas",
+                   return_value={"texto", "pdfs", "fofoca"}), \
+             patch("monitor_diario_oficial.webdriver.Chrome") as mock_chrome:
+            r = monitor.enviar_whatsapp(
+                "msg", "Grupo", ["a.pdf"], mensagem_apos_pdf="fofoca", id_edicao=815
+            )
+        assert r is True
+        mock_chrome.assert_not_called()

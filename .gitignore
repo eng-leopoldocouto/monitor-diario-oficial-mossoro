@@ -8,6 +8,9 @@ logs/
 *.log
 # Temporarios
 pdfs_temporarios/
+# Estado de envio (idempotencia por etapa) - regeneravel
+.envio_estado.json
+.envio_estado.json.tmp
 # Python
 __pycache__/
 *.pyc

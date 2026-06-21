@@ -36,7 +36,7 @@ from selenium import webdriver  # noqa: F401
 from src import config, scraping, parsing, pdf, whatsapp  # noqa: F401
 
 from src.config import (  # noqa: F401
-    configurar_logging, log, _atualizar_env,
+    configurar_logging, log, _atualizar_env, _ler_int_env,
     NOMES_MONITORADOS, SECRETARIAS_MOSSORO, WHATSAPP_GRUPO, NOME_SALA,
     WHATSAPP_GRUPO_TESTE, TIMEOUT_QR_CODE, BASE_URL,
     WHATSAPP_PROFILE_DIR, LOG_DIR, PDF_TEMP_DIR,
@@ -89,7 +89,7 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
     #    Em modo teste, trata ULTIMO_DOM_NUMERO como 0 para sempre reprocessar a
     #    edição mais recente, mesmo que já tenha sido monitorada.
     numero_atual = publicacao.get("numero")
-    ultimo_salvo = 0 if modo_teste else int(os.environ.get("ULTIMO_DOM_NUMERO", "0"))
+    ultimo_salvo = 0 if modo_teste else _ler_int_env("ULTIMO_DOM_NUMERO", 0)
     if numero_atual is not None and numero_atual <= ultimo_salvo:
         log.info(
             f"Edição Nº {numero_atual} já foi monitorada "
@@ -97,10 +97,15 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
         )
         return
 
-    # 2a. Persiste o número da edição atual no .env para evitar reprocessamento futuro.
-    #     Em modo teste NÃO persiste, para não interferir no rastreamento real.
-    if numero_atual is not None and not modo_teste:
-        _atualizar_env("ULTIMO_DOM_NUMERO", str(numero_atual))
+    # 2a. O número da edição só é persistido ao FINAL, depois do envio bem-sucedido
+    #     (ver passos 4b/7). Assim, uma falha (envio, parsing ou exceção) NÃO avança
+    #     o controle e a edição é reprocessada na próxima execução. Em modo teste
+    #     nunca persiste, para não interferir no rastreamento real.
+    pode_persistir = numero_atual is not None and not modo_teste
+
+    # Idempotência de envio: identifica a edição para que um retry pule etapas já
+    # enviadas. Desligada em modo teste (reenvio proposital ao grupo de testes).
+    id_edicao = None if modo_teste else numero_atual
 
     # 3. Extrai os atos (portarias, decretos, etc.) da publicação
     portarias = extrair_portarias(publicacao["url_html"])
@@ -139,11 +144,15 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
             f"❌ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."
         )
         # Fofoca enviada como segunda mensagem, mesmo sem PDFs
-        enviar_whatsapp(
+        sucesso = enviar_whatsapp(
             mensagem_vazia, grupo_destino,
             mensagem_apos_pdf=secao_fofoca,
             sessao_descartavel=sessao_descartavel,
+            id_edicao=id_edicao,
         )
+        # Avança o controle só após o aviso ser enviado com sucesso.
+        if sucesso and pode_persistir:
+            _atualizar_env("ULTIMO_DOM_NUMERO", str(numero_atual))
         return
 
     log.info(f"{len(ocorrencias)} ocorrência(s) encontrada(s). Preparando envio...")
@@ -162,22 +171,51 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
         log.warning("PDF não encontrado — apenas a mensagem de texto será enviada.")
 
     # 7. Envia: (1) mensagem principal, (2) PDFs, (3) fofoca — tudo na mesma sessão
-    sucesso = enviar_whatsapp(
-        mensagem, grupo_destino, caminhos_pdf,
-        mensagem_apos_pdf=secao_fofoca,
-        sessao_descartavel=sessao_descartavel,
-    )
-
-    # 8. Remove os PDFs temporários após envio
-    for caminho in caminhos_pdf:
-        if os.path.isfile(caminho):
-            os.remove(caminho)
-            log.info(f"PDF temporário removido: {os.path.basename(caminho)}")
+    try:
+        sucesso = enviar_whatsapp(
+            mensagem, grupo_destino, caminhos_pdf,
+            mensagem_apos_pdf=secao_fofoca,
+            sessao_descartavel=sessao_descartavel,
+            id_edicao=id_edicao,
+        )
+    finally:
+        # 8. Remove os PDFs temporários SEMPRE — inclusive se o envio lançar.
+        #    Eles contêm dados pessoais (nome nos arquivos) e não devem acumular.
+        #    A falha ao remover um não impede remover os demais.
+        for caminho in caminhos_pdf:
+            if os.path.isfile(caminho):
+                try:
+                    os.remove(caminho)
+                    log.info(f"PDF temporário removido: {os.path.basename(caminho)}")
+                except OSError as e:
+                    log.warning(f"Não foi possível remover PDF temporário '{caminho}': {e}")
 
     if sucesso:
+        # Avança o controle só agora, com tudo enviado e sem erro.
+        if pode_persistir:
+            _atualizar_env("ULTIMO_DOM_NUMERO", str(numero_atual))
         log.info("Processo concluído com sucesso!")
     else:
         log.error("Falha no envio da mensagem. Verifique os logs.")
+
+
+def _executar_protegido() -> None:
+    """Executa main() capturando exceções para que o loop agendado sobreviva.
+
+    Sem isso, uma única exceção não tratada (PDF malformado, .env corrompido,
+    KeyError por mudança de layout, falha de I/O) encerraria o `while True` e
+    mataria o job diário em silêncio — nenhuma execução futura ocorreria.
+    KeyboardInterrupt/SystemExit NÃO são capturados, para ainda permitir parar
+    o processo manualmente.
+    """
+    try:
+        main()
+    except Exception:
+        log.error(
+            "Execução falhou com exceção não tratada — o agendamento continua "
+            "e tentará novamente no próximo horário.",
+            exc_info=True,
+        )
 
 
 def _agendar_execucao(horario: str) -> None:
@@ -203,7 +241,7 @@ def _agendar_execucao(horario: str) -> None:
     horario_hoje = agora.replace(hour=hora, minute=minuto, second=0, microsecond=0)
     if agora >= horario_hoje:
         log.info("Horário de hoje já passou — executando imediatamente.")
-        main()
+        _executar_protegido()
 
     while True:
         agora = datetime.now()
@@ -219,7 +257,7 @@ def _agendar_execucao(horario: str) -> None:
             f"(em {horas}h {minutos}min)"
         )
         time.sleep(delta_s)
-        main()
+        _executar_protegido()
 
 
 def _extrair_numero_teste(argv: list[str]) -> int | None:
