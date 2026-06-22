@@ -54,6 +54,43 @@ def _sanitizar_nome_arquivo(nome: str) -> str:
     return limpo.strip(" .")
 
 
+# Limite de caminho do Windows (MAX_PATH = 260, incluindo o terminador nulo).
+# O Chrome/chromedriver não opta por long paths, então um caminho longo demais
+# faz o envio do anexo falhar com "File not found" mesmo o arquivo existindo em
+# disco. Mantemos uma margem de segurança abaixo de 260.
+_LIMITE_CAMINHO = 255
+
+
+def _montar_nome_arquivo(titulo_arquivo: str, nomes: list[str], pasta: str) -> str:
+    """Monta o basename do PDF garantindo que o caminho completo caiba no limite.
+
+    Usa os nomes completos quando o caminho final (pasta + arquivo) não ultrapassa
+    `_LIMITE_CAMINHO`. Quando ultrapassaria — caso de portarias com vários nomes —
+    cai para o PRIMEIRO nome de cada pessoa (ex.: "CARLA + FRANCISCO + ..."). Se
+    ainda assim exceder, trunca preservando a extensão ".pdf".
+    """
+    def _arquivo(lista: list[str]) -> str:
+        return _sanitizar_nome_arquivo(f"{titulo_arquivo} - {' + '.join(lista)}") + ".pdf"
+
+    def _cabe(nome: str) -> bool:
+        return len(os.path.join(pasta, nome)) <= _LIMITE_CAMINHO
+
+    nome = _arquivo(nomes)
+    if _cabe(nome):
+        return nome
+
+    # Fallback: primeiro nome de cada pessoa (token antes do primeiro espaço).
+    primeiros = [(n.split() or [n])[0] for n in nomes]
+    nome = _arquivo(primeiros)
+    if _cabe(nome):
+        return nome
+
+    # Último recurso (muitas pessoas): trunca o basename preservando ".pdf".
+    espaco = _LIMITE_CAMINHO - len(os.path.join(pasta, ".pdf"))
+    base = _sanitizar_nome_arquivo(f"{titulo_arquivo} - {' + '.join(primeiros)}")
+    return base[:max(espaco, 0)].rstrip(" .") + ".pdf"
+
+
 def _prox_ato_titulo(portaria: dict, portarias: list[dict] | None) -> str | None:
     """
     Título do ato imediatamente seguinte a `portaria` na lista ORDENADA de atos
@@ -259,9 +296,9 @@ def extrair_pdfs_por_ocorrencia(
         else:
             titulo_arquivo = titulo
 
-        # Nome do arquivo inclui todos os nomes encontrados na portaria
-        nomes_arquivo = " + ".join(nomes)
-        nome_arquivo = _sanitizar_nome_arquivo(f"{titulo_arquivo} - {nomes_arquivo}") + ".pdf"
+        # Nome do arquivo inclui os nomes encontrados na portaria, reduzindo ao
+        # primeiro nome de cada pessoa caso o caminho completo estoure o MAX_PATH.
+        nome_arquivo = _montar_nome_arquivo(titulo_arquivo, nomes, pasta)
         # basename garante que o arquivo nunca escape da pasta de destino
         caminho_saida = os.path.join(pasta, os.path.basename(nome_arquivo))
         try:

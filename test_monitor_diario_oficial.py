@@ -404,6 +404,48 @@ class TestSanitizarNomeArquivo:
         assert monitor._sanitizar_nome_arquivo(original) == original
 
 
+class TestMontarNomeArquivo:
+    """O caminho do PDF não pode ultrapassar o limite do Windows (MAX_PATH ~260).
+
+    Quando os nomes completos cabem, são preservados. Quando uma portaria reúne
+    vários nomes e o caminho estouraria, cai para o PRIMEIRO nome de cada pessoa
+    (ex.: "CARLA + FRANCISCO + DEIVISON + ALAERDSON").
+    """
+
+    # Pasta real onde os PDFs temporários são gravados (105 caracteres).
+    PASTA = (
+        r"C:\Users\SEINFRA\Desktop\LEOPOLDO\Claude coisas\Projetos"
+        r"\monitor-diario-oficial-mossoro\pdfs_temporarios"
+    )
+
+    NOMES_LONGOS = [
+        "CARLA VANNESSA DA ROCHA",
+        "FRANCISCO GUEDES DA COSTA NETO",
+        "DEIVISON TAEMY DIAS DA SILVA",
+        "ALAERDSON NASCIMENTO DE LIMA",
+    ]
+
+    def test_usa_nomes_completos_quando_cabem(self):
+        nome = monitor._montar_nome_arquivo(
+            "PORTARIA Nº 262, DE 08 DE MAIO DE 2026", ["MARINA COSTA"], self.PASTA
+        )
+        assert nome == "PORTARIA Nº 262, DE 08 DE MAIO DE 2026 - MARINA COSTA.pdf"
+
+    def test_cai_para_primeiro_nome_quando_excede_limite(self):
+        nome = monitor._montar_nome_arquivo(
+            "PORTARIA Nº 160, DE 19 DE JUNHO DE 2026", self.NOMES_LONGOS, self.PASTA
+        )
+        assert "CARLA + FRANCISCO + DEIVISON + ALAERDSON" in nome
+        # Reduzido ao primeiro nome: sobrenomes não aparecem mais.
+        assert "VANNESSA" not in nome
+
+    def test_caminho_final_respeita_o_limite_do_windows(self):
+        nome = monitor._montar_nome_arquivo(
+            "PORTARIA Nº 160, DE 19 DE JUNHO DE 2026", self.NOMES_LONGOS, self.PASTA
+        )
+        assert len(os.path.join(self.PASTA, nome)) <= 255
+
+
 class TestExtrairPdfsPorOcorrencia:
 
     def _ocorrencia(self, titulo, nome, ementa=""):
