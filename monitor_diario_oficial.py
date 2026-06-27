@@ -132,7 +132,10 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
     log.info(f"{len(fofocas)} fofoca(s) incluída(s) na mensagem.")
 
     if not ocorrencias:
-        log.info("Nenhum nome monitorado encontrado — enviando aviso ao WhatsApp.")
+        log.info(
+            "0 ocorrência(s) encontrada(s) — nenhum nome monitorado nesta edição. "
+            "Enviando aviso ao WhatsApp."
+        )
         edicao_vazia = (
             f"📅 Edição Nº {numero_atual}: {publicacao['data']}"
             if numero_atual else f"📅 Edição: {publicacao['data']}"

@@ -271,6 +271,7 @@ def detectar_ponto_facultativo(portarias: list[dict]) -> list[dict]:
                 datas_ordenadas.append(data_br)
 
     if not houve_ponto:
+        log.info("Nenhum ponto facultativo detectado nesta edição.")
         return []
 
     if not datas_ordenadas:
