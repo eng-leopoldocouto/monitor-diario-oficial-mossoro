@@ -33,7 +33,7 @@ from selenium import webdriver  # noqa: F401
 
 # Submódulos expostos como atributos — permite patch em
 # monitor_diario_oficial.whatsapp.WebDriverWait, .scraping.datetime, etc.
-from src import config, scraping, parsing, pdf, whatsapp  # noqa: F401
+from src import config, scraping, parsing, pdf, whatsapp, terminal  # noqa: F401
 
 from src.config import (  # noqa: F401
     configurar_logging, log, _atualizar_env, _ler_int_env,
@@ -58,17 +58,34 @@ from src.pdf import (  # noqa: F401
 from src.whatsapp import (  # noqa: F401
     _colar_windows, _colar_no_elemento, _enviar_arquivos_no_grupo, enviar_whatsapp,
 )
+from src.terminal import imprimir_no_terminal  # noqa: F401
 
 
 def main(modo_teste: bool = False, numero_diario: int | None = None,
-         sessao_descartavel: bool = False):
+         sessao_descartavel: bool = False, modo_terminal: bool = False):
     log.info("=" * 60)
     log.info("Iniciando monitoramento do Diário Oficial de Mossoró")
+    if modo_terminal:
+        log.info("MODO TERMINAL ativo — mensagens serão impressas no terminal, "
+                 "sem envio ao WhatsApp e sem baixar/fatiar PDF.")
     if modo_teste:
         log.info(f"MODO TESTE ativo — destino: grupo '{WHATSAPP_GRUPO_TESTE}'")
     if numero_diario is not None:
-        log.info(f"Edição escolhida para teste: DOM Nº {numero_diario}")
+        log.info(f"Edição escolhida: DOM Nº {numero_diario}")
     log.info("=" * 60)
+
+    # Função de "envio": no modo terminal apenas imprime; caso contrário, envia
+    # via WhatsApp. A assinatura compatível permite trocar uma pela outra.
+    if modo_terminal:
+        def _entregar(mensagem, grupo, caminhos_pdf=None, mensagem_apos_pdf="",
+                      sessao_descartavel=False, id_edicao=None):
+            return imprimir_no_terminal(
+                mensagem, grupo,
+                caminhos_pdf=caminhos_pdf,
+                mensagem_apos_pdf=mensagem_apos_pdf,
+            )
+    else:
+        _entregar = enviar_whatsapp
 
     # Em modo teste, as mensagens vão para o grupo de testes, não para o grupo real.
     grupo_destino = WHATSAPP_GRUPO_TESTE if modo_teste else WHATSAPP_GRUPO
@@ -89,7 +106,9 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
     #    Em modo teste, trata ULTIMO_DOM_NUMERO como 0 para sempre reprocessar a
     #    edição mais recente, mesmo que já tenha sido monitorada.
     numero_atual = publicacao.get("numero")
-    ultimo_salvo = 0 if modo_teste else _ler_int_env("ULTIMO_DOM_NUMERO", 0)
+    # Em modo terminal (assim como em teste) tratamos o último número como 0 para
+    # sempre reprocessar a edição alvo, já que nada é efetivamente "entregue".
+    ultimo_salvo = 0 if (modo_teste or modo_terminal) else _ler_int_env("ULTIMO_DOM_NUMERO", 0)
     if numero_atual is not None and numero_atual <= ultimo_salvo:
         log.info(
             f"Edição Nº {numero_atual} já foi monitorada "
@@ -101,11 +120,12 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
     #     (ver passos 4b/7). Assim, uma falha (envio, parsing ou exceção) NÃO avança
     #     o controle e a edição é reprocessada na próxima execução. Em modo teste
     #     nunca persiste, para não interferir no rastreamento real.
-    pode_persistir = numero_atual is not None and not modo_teste
+    #     Modo terminal nunca persiste — nada foi enviado, apenas exibido.
+    pode_persistir = numero_atual is not None and not modo_teste and not modo_terminal
 
     # Idempotência de envio: identifica a edição para que um retry pule etapas já
-    # enviadas. Desligada em modo teste (reenvio proposital ao grupo de testes).
-    id_edicao = None if modo_teste else numero_atual
+    # enviadas. Desligada em modo teste/terminal (não há envio real a deduplicar).
+    id_edicao = None if (modo_teste or modo_terminal) else numero_atual
 
     # 3. Extrai os atos (portarias, decretos, etc.) da publicação
     portarias = extrair_portarias(publicacao["url_html"])
@@ -134,7 +154,7 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
     if not ocorrencias:
         log.info(
             "0 ocorrência(s) encontrada(s) — nenhum nome monitorado nesta edição. "
-            "Enviando aviso ao WhatsApp."
+            + ("Exibindo aviso no terminal." if modo_terminal else "Enviando aviso ao WhatsApp.")
         )
         edicao_vazia = (
             f"📅 Edição Nº {numero_atual}: {publicacao['data']}"
@@ -147,7 +167,7 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
             f"❌ Nenhuma ocorrência encontrada para os nomes monitorados nesta edição."
         )
         # Fofoca enviada como segunda mensagem, mesmo sem PDFs
-        sucesso = enviar_whatsapp(
+        sucesso = _entregar(
             mensagem_vazia, grupo_destino,
             mensagem_apos_pdf=secao_fofoca,
             sessao_descartavel=sessao_descartavel,
@@ -163,19 +183,24 @@ def main(modo_teste: bool = False, numero_diario: int | None = None,
     # 5. Formata a mensagem de texto principal (sem fofoca — enviada separadamente)
     mensagem = formatar_mensagem(ocorrencias, publicacao["data"], numero_atual)
 
-    # 6. Baixa o PDF e gera um arquivo separado por ocorrência
-    url_pdf = buscar_url_pdf(publicacao["url_html"])
+    # 6. Baixa o PDF e gera um arquivo separado por ocorrência.
+    #    No modo terminal pulamos esta etapa por completo: nada de baixar ou
+    #    fatiar PDF — apenas as mensagens de texto são exibidas no terminal.
     caminhos_pdf = []
-    if url_pdf:
-        caminhos_pdf = extrair_pdfs_por_ocorrencia(url_pdf, ocorrencias, portarias)
-        if not caminhos_pdf:
-            log.warning("Nenhum PDF gerado — apenas a mensagem de texto será enviada.")
+    if modo_terminal:
+        log.info("Modo terminal — PDF não será baixado nem fatiado.")
     else:
-        log.warning("PDF não encontrado — apenas a mensagem de texto será enviada.")
+        url_pdf = buscar_url_pdf(publicacao["url_html"])
+        if url_pdf:
+            caminhos_pdf = extrair_pdfs_por_ocorrencia(url_pdf, ocorrencias, portarias)
+            if not caminhos_pdf:
+                log.warning("Nenhum PDF gerado — apenas a mensagem de texto será enviada.")
+        else:
+            log.warning("PDF não encontrado — apenas a mensagem de texto será enviada.")
 
     # 7. Envia: (1) mensagem principal, (2) PDFs, (3) fofoca — tudo na mesma sessão
     try:
-        sucesso = enviar_whatsapp(
+        sucesso = _entregar(
             mensagem, grupo_destino, caminhos_pdf,
             mensagem_apos_pdf=secao_fofoca,
             sessao_descartavel=sessao_descartavel,
@@ -263,20 +288,25 @@ def _agendar_execucao(horario: str) -> None:
         _executar_protegido()
 
 
-def _extrair_numero_teste(argv: list[str]) -> int | None:
+def _extrair_numero_apos_flag(argv: list[str], flag: str) -> int | None:
     """
-    Retorna o número da edição informado logo após a flag --test, se houver.
+    Retorna o número da edição informado logo após `flag`, se houver.
 
-    Ex.: ["prog", "--test", "839"] → 839
-         ["prog", "--test"]        → None  (usa a edição mais recente)
-         ["prog", "--test", "--x"] → None  (token seguinte não é número)
+    Ex.: (["prog", "--test", "839"], "--test")  → 839
+         (["prog", "--test"], "--test")          → None  (edição mais recente)
+         (["prog", "--test", "--x"], "--test")   → None  (token seguinte não é número)
     """
-    if "--test" not in argv:
+    if flag not in argv:
         return None
-    idx = argv.index("--test")
+    idx = argv.index(flag)
     if idx + 1 < len(argv) and argv[idx + 1].isdigit():
         return int(argv[idx + 1])
     return None
+
+
+def _extrair_numero_teste(argv: list[str]) -> int | None:
+    """Número da edição informado logo após a flag --test, se houver."""
+    return _extrair_numero_apos_flag(argv, "--test")
 
 
 if __name__ == "__main__":
@@ -286,13 +316,24 @@ if __name__ == "__main__":
     # Sem efeito em --agendar (execuções agendadas usam o perfil persistente).
     sessao_descartavel = "--nova-sessao" in sys.argv
 
+    # ── Modo terminal ─────────────────────────────────────────────────────────
+    # Acionado por: python monitor_diario_oficial.py --terminal [NÚMERO]
+    # NÃO envia nada ao WhatsApp e NÃO baixa/fatia PDF: apenas imprime no terminal,
+    # bem formatadas, as mensagens que seriam enviadas (texto e Fofoca). Sem número
+    # → edição mais recente; com número (ex.: --terminal 839) → busca essa edição.
+    # Como teste, trata ULTIMO_DOM_NUMERO como 0 (sempre reprocessa) e nada persiste.
+    if "--terminal" in sys.argv:
+        main(
+            modo_terminal=True,
+            numero_diario=_extrair_numero_apos_flag(sys.argv, "--terminal"),
+        )
     # ── Modo teste ────────────────────────────────────────────────────────────
     # Acionado por: python monitor_diario_oficial.py --test [NÚMERO]
     # Sem número → edição mais recente. Com número (ex.: --test 839) → busca essa
     # edição específica pelo nº do DOM. Em ambos: trata ULTIMO_DOM_NUMERO como 0
     # (sempre reprocessa) e envia ao grupo de testes (WHATSAPP_GRUPO_TESTE), sem
     # alterar o rastreamento real no .env.
-    if "--test" in sys.argv:
+    elif "--test" in sys.argv:
         main(
             modo_teste=True,
             numero_diario=_extrair_numero_teste(sys.argv),
