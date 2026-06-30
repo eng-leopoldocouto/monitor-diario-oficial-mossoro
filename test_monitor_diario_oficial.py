@@ -15,6 +15,7 @@ import re
 import sys
 import unicodedata
 import pytest
+from contextlib import ExitStack
 from datetime import datetime
 from unittest.mock import patch, MagicMock, call
 from selenium.common.exceptions import TimeoutException as SeleniumTimeoutException
@@ -2321,6 +2322,98 @@ class TestMainRoteamento:
 
 
 # ══════════════════════════════════════════════════════════════
+# 10b. main() — modo terminal (--terminal): imprime, não envia
+# ══════════════════════════════════════════════════════════════
+
+class TestMainModoTerminal:
+
+    @staticmethod
+    def _isola_main(stack, ocorrencias):
+        """Aplica, num ExitStack, os patches que isolam main() de rede/WhatsApp/PDF.
+
+        Retorna o dict de mocks relevantes para asserção.
+        """
+        publicacao = {"numero": 999, "data": "16/06/2026", "url_html": "http://x/999"}
+        p = lambda alvo, **kw: stack.enter_context(patch(f"monitor_diario_oficial.{alvo}", **kw))
+        p("buscar_ultima_publicacao", return_value=publicacao)
+        p("extrair_portarias", return_value=["ato"])
+        p("buscar_nomes_em_portarias", return_value=ocorrencias)
+        p("detectar_fofocas", return_value=[])
+        p("promovido_remanejado", return_value=[])
+        p("detectar_ponto_facultativo", return_value=[])
+        p("formatar_fofocas", return_value="FOFOCA")
+        p("formatar_mensagem", return_value="MSG")
+        return {
+            "enviar": p("enviar_whatsapp"),
+            "print": p("imprimir_no_terminal", return_value=True),
+            "url_pdf": p("buscar_url_pdf"),
+            "fatia": p("extrair_pdfs_por_ocorrencia"),
+        }
+
+    def test_nao_envia_whatsapp_e_imprime(self):
+        """Com modo_terminal, main não chama enviar_whatsapp e usa o printer."""
+        ocorrencias = [{"nome": "FULANO", "portaria": {"titulo": "PORTARIA Nº 1"}}]
+        with ExitStack() as stack:
+            mocks = self._isola_main(stack, ocorrencias)
+            monitor.main(modo_terminal=True)
+
+        mocks["enviar"].assert_not_called()
+        mocks["print"].assert_called_once()
+
+    def test_nao_baixa_nem_fatia_pdf(self):
+        """Modo terminal não deve baixar a URL do PDF nem fatiá-lo por ocorrência."""
+        ocorrencias = [{"nome": "FULANO", "portaria": {"titulo": "PORTARIA Nº 1"}}]
+        with ExitStack() as stack:
+            mocks = self._isola_main(stack, ocorrencias)
+            monitor.main(modo_terminal=True)
+
+        mocks["url_pdf"].assert_not_called()
+        mocks["fatia"].assert_not_called()
+
+    def test_nao_persiste_ultimo_dom(self):
+        """Modo terminal nunca avança ULTIMO_DOM_NUMERO (nada foi entregue)."""
+        publicacao = {"numero": 999, "data": "16/06/2026", "url_html": "http://x/999"}
+        with patch("monitor_diario_oficial.buscar_ultima_publicacao", return_value=publicacao), \
+             patch("monitor_diario_oficial.extrair_portarias", return_value=["ato"]), \
+             patch("monitor_diario_oficial.buscar_nomes_em_portarias", return_value=[]), \
+             patch("monitor_diario_oficial.detectar_fofocas", return_value=[]), \
+             patch("monitor_diario_oficial.promovido_remanejado", return_value=[]), \
+             patch("monitor_diario_oficial.detectar_ponto_facultativo", return_value=[]), \
+             patch("monitor_diario_oficial.formatar_fofocas", return_value=""), \
+             patch("monitor_diario_oficial.imprimir_no_terminal", return_value=True), \
+             patch("monitor_diario_oficial._atualizar_env") as m_env_save:
+            monitor.main(modo_terminal=True)
+
+        m_env_save.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════
+# 10c. imprimir_no_terminal — saída no terminal sem WhatsApp
+# ══════════════════════════════════════════════════════════════
+
+class TestImprimirNoTerminal:
+
+    def test_imprime_mensagem_principal_e_fofoca(self, capsys):
+        ok = monitor.imprimir_no_terminal(
+            "TEXTO PRINCIPAL", "GRUPO X", mensagem_apos_pdf="FOFOCA AQUI"
+        )
+        out = capsys.readouterr().out
+        assert ok is True
+        assert "TEXTO PRINCIPAL" in out
+        assert "FOFOCA AQUI" in out
+        assert "GRUPO X" in out
+
+    def test_omite_bloco_de_fofoca_quando_vazia(self, capsys):
+        monitor.imprimir_no_terminal("SO TEXTO", "GRUPO X", mensagem_apos_pdf="")
+        out = capsys.readouterr().out
+        assert "SO TEXTO" in out
+        assert "FOFOCA DA SECRETARIA" not in out
+
+    def test_retorna_true_sempre(self):
+        assert monitor.imprimir_no_terminal("x", "g") is True
+
+
+# ══════════════════════════════════════════════════════════════
 # 11. _extrair_numero_teste — número que segue a flag --test
 # ══════════════════════════════════════════════════════════════
 
@@ -2337,6 +2430,12 @@ class TestExtrairNumeroTeste:
 
     def test_sem_flag_test_retorna_none(self):
         assert monitor._extrair_numero_teste(["prog"]) is None
+
+    def test_numero_apos_terminal(self):
+        assert monitor._extrair_numero_apos_flag(["prog", "--terminal", "839"], "--terminal") == 839
+
+    def test_terminal_sem_numero_retorna_none(self):
+        assert monitor._extrair_numero_apos_flag(["prog", "--terminal"], "--terminal") is None
 
 
 # ══════════════════════════════════════════════════════════════

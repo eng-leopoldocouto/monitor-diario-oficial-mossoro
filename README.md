@@ -172,6 +172,27 @@ python monitor_diario_oficial.py --nova-sessao --test
 
 > **Sem efeito com `--agendar`:** execuções agendadas sempre usam o perfil persistente (`.whatsapp_profile/`), independentemente de `--nova-sessao` estar presente.
 
+### Modo terminal (--terminal)
+
+```bash
+python monitor_diario_oficial.py --terminal
+```
+
+Roda uma única vez e **imprime no terminal** as mensagens que seriam enviadas (texto principal e a Fofoca da Secretaria), **sem abrir o WhatsApp Web e sem enviar nada**. Quando a edição tem PDF, ele **não é baixado nem fatiado** — só as mensagens de texto, bem formatadas, são exibidas. Ideal para conferir rapidamente o conteúdo de uma edição sem depender do navegador, do login por QR ou da rede para o PDF.
+
+Como em `--test`, ele **reprocessa a edição mais recente** (trata `ULTIMO_DOM_NUMERO` como `0`) e **nada é persistido** no `.env` — afinal, nenhuma mensagem foi realmente entregue. Para inspecionar uma edição específica, informe o número do DOM logo após a flag:
+
+```bash
+python monitor_diario_oficial.py --terminal 839
+```
+
+| | `--test` | `--terminal` |
+|---|---|---|
+| Abre o WhatsApp Web? | Sim | Não |
+| Envia mensagens? | Sim (grupo de testes) | Não (imprime no terminal) |
+| Baixa/fatia o PDF? | Sim | Não |
+| Atualiza `ULTIMO_DOM_NUMERO`? | Não | Não |
+
 ---
 
 ## O que chega no WhatsApp
@@ -335,7 +356,7 @@ Pastas e arquivos criados automaticamente durante o uso:
 ├── .envio_estado.json          # Progresso de envio por edição (idempotência; regenerável)
 └── logs/                       # Logs de execução (rotativos, máx. 5 MB cada)
     ├── producao.log            # Execução normal
-    └── testes.log              # Execução com --test ou suíte pytest
+    └── testes.log              # Execução com --test/--terminal ou suíte pytest
 ```
 
 > **Idempotência:** o `.envio_estado.json` registra quais etapas (texto/PDFs/fofoca)

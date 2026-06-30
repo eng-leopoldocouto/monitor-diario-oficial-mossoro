@@ -156,8 +156,8 @@ def _nome_arquivo_log(argv=None, modulos=None) -> str:
     """
     Escolhe o arquivo de log conforme o modo de execução.
 
-    - Execução com a flag --test OU sob a suíte pytest → "testes.log"
-      (evita poluir o log de produção com ruído de teste).
+    - Execução com a flag --test/--terminal OU sob a suíte pytest → "testes.log"
+      (evita poluir o log de produção com ruído de teste/inspeção).
     - Caso contrário → "producao.log".
 
     argv/modulos são injetáveis para permitir teste puro (sem tocar no
@@ -165,7 +165,7 @@ def _nome_arquivo_log(argv=None, modulos=None) -> str:
     """
     argv = sys.argv if argv is None else argv
     modulos = sys.modules if modulos is None else modulos
-    em_teste = ("--test" in argv) or ("pytest" in modulos)
+    em_teste = ("--test" in argv) or ("--terminal" in argv) or ("pytest" in modulos)
     return "testes.log" if em_teste else "producao.log"
 
 
